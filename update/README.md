@@ -1,12 +1,12 @@
 # dash-update: uppdatera simple_ha_dash från GitHub
 
-`dash-update` hämtar en ny version av panelen från det här repot, kontrollerar den, byter, startar om tjänsten och lägger tillbaka förra versionen av sig själv om den nya inte blir frisk. Källan är grenen **`main`** i det publika repot `simple_ha_dash`, hämtad över https (ingen nyckel behövs). Plattan installerar första gången med `simple-ha-dash install`, som använder `dash-update`.
+`dash-update` hämtar en ny version av panelen från det här repot, kontrollerar den, byter, startar om tjänsten och lägger tillbaka förra versionen av sig själv om den nya inte blir frisk. Källan är grenen **`main`** i det publika repot `simple_ha_dash`, hämtad över https (ingen nyckel behövs). Första installationen görs med `git clone` och `install.sh` (se README i roten); därefter uppdaterar `dash-update`.
 
 ## Så går en ny version till
 
 1. Ändringen görs och provas.
 2. Den checkas in och skjuts till `main`.
-3. Plattorna installerar den när någon trycker **Uppdatera** eller kör `simple-ha-dash update` / `dash-update apply` (eller av timern om den slagits på).
+3. Plattorna installerar den när någon trycker **Uppdatera** eller kör `dash-update apply` (eller av timern om den slagits på).
 
 Vill man ha pågående arbete åtskilt från det plattorna hämtar: lägg en gren (till exempel `release`) och sätt `ref = release` i `/etc/dash-update/config.ini` på plattorna.
 
@@ -58,7 +58,7 @@ Loggen går till journalen: `journalctl -t dash-update`.
 /opt/dash-panel/update/install-updater.sh --timer  # timern på: kollar var 6:e timme
 ```
 
-Dash-avbilden (r8 och senare) har redan `dash-update` och `simple-ha-dash`; det här behövs bara på äldre installationer.
+Dash-avbilden (r8 och senare) har redan `dash-update` med `repo_url` till det här repot; det här behövs bara på äldre installationer.
 Skriptet lägger `dash-update` i `/usr/local/sbin`, config i `/etc/dash-update/config.ini` (skrivs inte över), skapar en deploy key och hämtar GitHubs värdnycklar. Det rör inte panelen, nätet, skärmen, strömmen eller apt-skyddet.
 
 Deploy key behövs bara för ett **privat** repo (`repo_url = git@github.com:...`): den privata delen skapas på plattan och lämnar aldrig enheten; den publika delen (som `keygen` skriver ut) läggs under repots *Settings → Deploy keys*, utan skrivrätt. Det publika repot hämtas över https utan nyckel.

@@ -8,17 +8,20 @@ Spelen är egna filer i mappen `games/` (Blockpussel, Sudoku och Patians följer
 
 ## Installera på en platta
 
-Plattan ska köra dash-avbilden (r8 eller senare, från SD-kort eller installerad i det inbyggda minnet) och vara på nätet.
-Logga in med ssh som root och kör:
+Plattan ska köra dash-avbilden (Armbian, från SD-kort eller installerad i det inbyggda minnet) och vara på nätet. git,
+Python 3 och Pillow finns i avbilden. Logga in med ssh som root och kör:
 
-    simple-ha-dash install     # installerar git vid behov, hämtar panelen härifrån, startar den och slår på den vid uppstart
-    simple-ha-dash update      # hämtar senaste versionen (samma som knappen Uppdatera) och spelen
-    simple-ha-dash status      # vilken version som är installerad och om tjänsten går
-    simple-ha-dash remove      # stänger av och tar bort panelen (inställningarna i /etc/dash-panel ligger kvar)
+    git clone https://github.com/blobba79/simple_ha_dash.git /opt/dash-panel
+    /opt/dash-panel/install.sh --now
 
-Home Assistants adress och token fylls i på inställningskortet (`dash-config.txt` på DASHCFG) innan första start;
-vad som visas väljs sedan på redigeringssidan `http://<plattans adress>:8099`. Panelens interna namn är fortfarande
-`dash-panel` (katalogen `/opt/dash-panel`, tjänsten `dash-panel.service`), så att plattor som installerats tidigare fortsätter fungera.
+`install.sh --now` lägger in tjänsten `dash-panel`, slår på den vid uppstart, kopierar spelen till `/var/lib/dash-panel/games`
+och startar panelen. Home Assistants adress och token fylls i på inställningskortet (`dash-config.txt` på DASHCFG) före
+första start; vad som visas väljs sedan på redigeringssidan `http://<plattans adress>:8099`.
+
+Uppdatera: knappen **Uppdatera** på panelens inställningssida, eller `dash-update apply` över ssh (se `update/README.md`;
+första gången ersätts git-klonen av en vanlig installation med `VERSION.json`). Ta bort: `/opt/dash-panel/install.sh --remove`
+och sedan `rm -rf /opt/dash-panel`. Panelens interna namn är `dash-panel` (katalogen `/opt/dash-panel`, tjänsten
+`dash-panel.service`), som på plattor som installerats tidigare.
 
 ## Filer
 
@@ -47,7 +50,7 @@ huvud); ikonerna är Material Design Icons (Apache 2.0) och typsnittet Roboto (S
 
 ## Installera / ta bort för hand
 
-`simple-ha-dash install` (ovan) gör det här. För hand, med koden redan i `/opt/dash-panel`:
+Med koden i `/opt/dash-panel` (se ovan):
 
     /opt/dash-panel/install.sh --now      # installerar, slår på vid uppstart och startar direkt
     /opt/dash-panel/install.sh --remove   # stänger av och tar bort tjänsten; konsolen kommer tillbaka
