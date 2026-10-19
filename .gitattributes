@@ -5,3 +5,5 @@
 *.tgz binary
 # Spelen är egna filer (hämtas med Uppdatera spel) och ska inte med i det Uppdatera installerar
 games export-ignore
+# Källor för plattans kärna och U-Boot: hör till repot, inte till det som installeras på plattan
+device export-ignore
