@@ -28,7 +28,7 @@ och sedan `rm -rf /opt/dash-panel`. Panelens interna namn är `dash-panel` (kata
 | Sökväg | Vad |
 |---|---|
 | `/opt/dash-panel/` | programmet (denna katalog) |
-| `/etc/dash-panel/config.json` | vilka flikar, lampor och sensorer som visas, ordning och namn |
+| `/etc/dash-panel/config.json` | vilka flikar och vad som visas på dem, ordning och namn |
 | `/etc/dash-panel/token` | Home Assistants åtkomsttoken (läge 600, skrivs aldrig i andra filer eller loggar) |
 | `/etc/dash-panel/touch.json` | pekskärmens kalibrering |
 | `/var/lib/dash-panel/state.json` | senast använd ljusstyrka per dimbar lampa |
@@ -60,11 +60,41 @@ Loggar: `journalctl -u dash-panel -b`. Starta om: `systemctl restart dash-panel`
 ## Ändra vad som visas
 
 Öppna redigeringssidan i en webbläsare på samma nät: `http://<dashs adress>:8099`
-(adressen står också på skärmen när en flik är tom). Där väljer du flikar, lampor, strömbrytare och sensorer,
-ordning, namn, antal decimaler och decimaltecken. Det som listas kommer direkt från Home Assistant.
-På varje lampflik finns en bockruta **Visa knappen som slår om alla lampor på fliken** (`show_all` i konfigurationen,
-ikryssad som standard) och ett fält för vad det står på knappen (`all_label`). Utan knappen ryms åtta lampor på
-fliken i stället för sju. Har fliken åtta lampor går bockrutan inte att kryssa i förrän en lampa tagits bort.
+(adressen står också på skärmen när en flik är tom). Sidan är byggd som Home Assistants egna inställningar:
+flikarna i en meny till vänster (bakom ☰ på mobilen), och för varje flik
+
+- **rubrik och ikon**, och på knappflikar bockrutan **Visa knappen som slår om alla lampor på fliken** (`show_all`)
+  med texten på knappen (`all_label`);
+- **På fliken**: rutorna som de ligger på panelen. Dra i greppet för att flytta (fungerar med finger), tryck på en
+  ruta för namn, dimbar (lampor), decimaler (sensorer) eller för att ta bort den;
+- **Lägg till från Home Assistant**: sök (namn, område, enhet, id), filtrera på typ (Lampor, Scener, Automationer,
+  Hjälpare, Temperatur, Luftfuktighet, El och energi, Batteri …) och på område, och gruppera listan efter
+  **område och enhet** (inom ett område samlas det som sitter i samma enhet i en egen grupp), **enhet**, typ eller
+  inte alls. Alla grupper går att fälla ihop. **Lägg till alla** lägger till en hel grupp, så mycket som får plats.
+
+**Ny flik** kan fyllas direkt från ett område i Home Assistant. Alla flikar går att ta bort; utan flikar visar
+panelen en välkomstskärm som förklarar vad den gör, med adressen hit och en QR-kod. Tre sorters flikar:
+
+| Flik | Vad som får ligga där | På panelen |
+|---|---|---|
+| Knappar (högst 8) | lampor, strömbrytare, fläktar, automationer, hjälpare av/på (`input_boolean`), scener, skript, knappar (`button`, `input_button`) | växel för på/av; scener, skript och knappar får en tryckknapp (▶) som kör dem och visar "Aktiverad"/"Startat" en stund |
+| Värden (högst 11) | sensorer (temperatur, luftfuktighet, el, batteri …), binära sensorer, hjälpare med värde (`input_number`, `counter`, `input_select`, `input_text`, `input_datetime`), `number`, `select`, väder, personer, jalusier och portar, lås, mediaspelare, klimat, sol, uppdateringar, timrar | två stora och nio små kort; text visas på svenska (Öppen/Stängd, Hemma, Halvklart, 7 °C …). **Tryck på ett kort med ett tal** öppnar grafen för det |
+| Graf (högst 3 kurvor) | sensorer och hjälpare med tal | hur värdena ändrats: 6 tim, 24 tim, 7 dagar eller 30 dagar (knappar ovanför grafen). Max och min står stort med tid och är markerade i kurvan |
+
+"Alla lampor" och siffran i fliken ("3 tända") räknar bara lampor och strömbrytare, aldrig scener eller automationer,
+och knappen visas bara om fliken har minst en lampa (då rymmer fliken sju saker plus knappen). En automations växel
+slår på och av automationen; den körs inte. Mediaspelare, klimat och luftfuktare kan också ligga på en knappflik
+(på/av). Områden och enheter läses ur Home Assistants register; har token inte rätt att läsa dem visas listan utan.
+
+Graferna hämtas ur Home Assistants historik: upp till två dygn rå historik, längre som timvärden ur
+långtidsstatistiken (medel, min och max per timme). Sensorer utan statistik (`state_class`) kan visas upp till en
+vecka. Inget sparas på plattan.
+
+**Säkerhetskopia** (under Allmänt): **Ladda ned konfigurationen** ger en fil (`simple_ha_dash-<datum>.json`) med
+flikarna, vad som ligger på dem, namn och inställningarna. **Läs in från fil** på en annan platta visar vad filen
+innehåller (och vad som saknas i den Home Assistant) innan den ersätter det som visas; det gäller först när du
+sparar. Home Assistants adress och token följer inte med.
+
 Sidan nås bara från det lokala nätet och visar eller ändrar aldrig tokenen.
 
 Konfigurationen kan också ändras för hand i `/etc/dash-panel/config.json` (läses om av sig själv inom ett par
@@ -82,6 +112,10 @@ namnet (silead_ts); kan åsidosättas med `DASH_INPUT`.
   (om fliken visar den knappen, se bockrutan ovan).
 - Skärmen ändras direkt och går tillbaka om Home Assistant inte bekräftar inom ca 2 s.
 - Dimbara lampor minns sin ljusstyrka: släckt och tänd igen ger samma nivå som sist.
+- Dimvyn för en lampa som kan färgtemperatur eller färg har tre lägen överst: **Ljusstyrka**, **Vitt** (en list från
+  varmt till kallt med tre snabbval, inom lampans eget område i kelvin) och **Färg** (tryck eller dra i fältet:
+  nyans åt sidan, mättnad uppifrån, vitt längst ned, och åtta färdiga färger). Reglaget för ljusstyrka till höger
+  finns kvar i alla lägen. Ett färgval tänder en släckt lampa. Under drag skickas högst ca fyra värden i sekunden.
 - Förlorad kontakt: sidfoten visar "Ingen kontakt med Home Assistant" direkt och värdena blir grå efter en kort
   frist (`stale_after`, 4 s). Gammal data visas aldrig som aktuell. Panelen ansluter om av sig själv.
 - Tid visas i Europe/Stockholm (dash går på UTC).

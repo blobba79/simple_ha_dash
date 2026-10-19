@@ -19,16 +19,20 @@ def ty(v):
 
 
 class LampVM(object):
-    """Visningsmodell för en cell på lampfliken. state: on, off, na (ej tillgänglig), stale (ingen kontakt)."""
-    __slots__ = ('kind', 'name', 'state', 'status', 'pal', 'dimmable', 'pressed')
+    """Visningsmodell för en cell på knappfliken. state: on, off, na (ej tillgänglig), stale (ingen kontakt).
+    kind: lamp, all (knappen "Alla lampor"), toggle (annat på/av) eller action (scen, skript, knapp: tryck = kör).
+    icons: (ikon när på, ikon när av). action: tryckknapp i stället för växel; done: senaste trycket gick igenom."""
+    __slots__ = ('kind', 'name', 'state', 'status', 'pal', 'dimmable', 'pressed', 'icons', 'busy', 'done')
 
-    def __init__(self, kind='lamp', name='', state='off', status='', pal=None, dimmable=False, pressed=False):
+    def __init__(self, kind='lamp', name='', state='off', status='', pal=None, dimmable=False, pressed=False,
+                 icons=None, busy=False, done=False):
         self.kind, self.name, self.state, self.status = kind, name, state, status
         self.pal, self.dimmable, self.pressed = pal, dimmable, pressed
+        self.icons, self.busy, self.done = icons, busy, done
 
     def key(self):
         return (self.kind, self.name, self.state, self.status, tuple(sorted(self.pal.items())) if self.pal else None,
-                self.dimmable, self.pressed)
+                self.dimmable, self.pressed, self.icons, self.busy, self.done)
 
 
 # ---------------------------------------------------------------- överrad: flikar, klocka, spelikon och kugghjul
@@ -295,15 +299,16 @@ def draw_lamp_cell(img, i, vm):
     st = vm.state
     is_all = vm.kind == 'all'
     bw = 1
+    on_icon, off_icon = vm.icons or ('Lightbulb', 'LightbulbOff')
     if st == 'on':
         if is_all:
             fill, border, circ, icol, scol, iname, bw = T.BLUE_BG, T.BLUE_D, T.BLUE_D, T.BLUE_L, T.BLUE_L, 'LightbulbMultiple', 2
         else:
-            p = vm.pal
-            fill, border, circ, icol, scol, iname = p['bg'], p['border'], p['circle'], p['main'], p['main'], 'Lightbulb'
+            p = vm.pal or T.BLUE_PAL
+            fill, border, circ, icol, scol, iname = p['bg'], p['border'], p['circle'], p['main'], p['main'], on_icon
     else:
         fill, border, circ, icol, scol = T.CARD, T.CARD_BORDER, T.OFF_CIRCLE, T.OFF_ICON, T.MUTED
-        iname = 'LightbulbMultiple' if is_all else 'LightbulbOff'
+        iname = 'LightbulbMultiple' if is_all else off_icon
         if st in ('na', 'stale'):
             circ, icol, scol = (31, 34, 38), (62, 78, 96), T.STALE_TEXT
     if vm.pressed:
@@ -318,7 +323,24 @@ def draw_lamp_cell(img, i, vm):
     text(img, x + 93, ty(top + 72.25), fit(vm.status, 400, 16, maxw), 400, 16, scol)
     if vm.dimmable:
         icon(img, 'ChevronRight', 28, x + 339, snap(top + 40.25), T.MUTED)
-    draw_toggle(img, x + 381, snap(top + 30.25), st == 'on', enabled=st in ('on', 'off'))
+    if vm.kind == 'action':
+        draw_action_btn(img, x + 381, snap(top + 30.25), st == 'on', enabled=st in ('on', 'off') and not vm.busy,
+                        done=vm.done)
+    else:
+        draw_toggle(img, x + 381, snap(top + 30.25), st == 'on', enabled=st in ('on', 'off'))
+
+
+def draw_action_btn(img, x, y, on, enabled=True, done=False):
+    """Tryckknappen för scener, skript och knappar: samma storlek som växeln (88x48), med en spela-ikon
+    (en bock när trycket gick igenom)."""
+    if not enabled:
+        border, fill, icol = (58, 58, 58), (30, 30, 30), (84, 84, 84)
+    elif on:
+        border, fill, icol = T.BLUE, T.BLUE_D, T.BLUE_L
+    else:
+        border, fill, icol = T.TOG_OFF_BORDER, T.TOG_OFF_BG, T.TEXT
+    bbox(img, x, y, x + 88, y + 48, 24, fill, border, 2)
+    icon(img, 'Check' if done else 'Play', 28, x + 30, y + 10, icol)
 
 
 # ---------------------------------------------------------------- dimvyn (3b)
@@ -408,15 +430,23 @@ def small_rect(k):
     return (snap(x), snap(top), snap(x + SMALL_W), snap(top + SMALL_H))
 
 
-def draw_temp_big(img, k, label, value, unit, stale=False):
+def draw_temp_big(img, k, label, value, unit, stale=False, iname='Thermometer', textual=False):
+    """Stort värdekort. textual: värdet är text (binär sensor, val, datum), ritas mindre och kan ta två rader."""
     x0, y0, x1, y1 = BIG_CARDS[k]
     clear(img, x0, y0, x1, y1)
     bbox(img, x0, y0, x1, y1, 20, T.CARD, T.CARD_BORDER, 1)
-    icon(img, 'Thermometer', 28, 43, y0 + 23, T.OFF_ICON if not stale else (62, 78, 96))
+    icon(img, iname, 28, 43, y0 + 23, T.OFF_ICON if not stale else (62, 78, 96))
     text(img, 81, y0 + 44, fit(label, 400, 20, 340 - 81 - 26), 400, 20, T.MUTED)
     base = y1 - 57
     if stale:
         text(img, 43, base, '–', 300, 88, T.STALE_TEXT)
+        return
+    if textual:
+        lines = wrap(value, 400, 40, 340 - 43 - 26)
+        if len(lines) > 2:
+            lines = [lines[0], fit(' '.join(lines[1:]), 400, 40, 340 - 43 - 26)]
+        for n, ln in enumerate(lines):
+            text(img, 43, base - 48 * (len(lines) - 1 - n), ln, 400, 40, T.TEXT)
         return
     value = fit(value, 300, 88, 340 - 43 - 26 - 60)
     text(img, 43, base, value, 300, 88, T.TEXT)
@@ -424,18 +454,21 @@ def draw_temp_big(img, k, label, value, unit, stale=False):
         text(img, 43 + text_width(value, 300, 88), base, ' ' + unit, 400, 36, T.MUTED)
 
 
-def draw_temp_small(img, k, label, value, unit, stale=False):
+def draw_temp_small(img, k, label, value, unit, stale=False, iname='Thermometer', textual=False):
     x0, y0, x1, y1 = small_rect(k)
     c, r = k % 3, k // 3
     fx, ftop = SMALL_COLS[c], SMALL_ROWS[r]
     fbottom = ftop + SMALL_H
     clear(img, x0, y0, x1, y1)
     bbox(img, x0, y0, x1, y1, 20, T.CARD, T.CARD_BORDER, 1)
-    icon(img, 'Thermometer', 22, snap(fx + 19), snap(ftop + 17), T.OFF_ICON if not stale else (62, 78, 96))
+    icon(img, iname, 22, snap(fx + 19), snap(ftop + 17), T.OFF_ICON if not stale else (62, 78, 96))
     text(img, fx + 49, ty(ftop + 34), fit(label, 400, 17, 137), 400, 17, T.MUTED)
     base = ty(fbottom - 33)
     if stale:
         text(img, fx + 19, base, '–', 500, 42, T.STALE_TEXT)
+        return
+    if textual:
+        text(img, fx + 19, base, fit(value, 500, 28, 167), 500, 28, T.TEXT)
         return
     value = fit(value, 500, 42, 167 - (28 if unit else 0))
     text(img, fx + 19, base, value, 500, 42, T.TEXT)
@@ -469,6 +502,38 @@ def draw_empty(img, line1, line2=None):
     if line2:
         w2 = text_width(line2, 400, 20)
         text(img, 512 - w2 / 2.0, 342, line2, 400, 20, T.FOOT)
+
+
+# ---------------------------------------------------------------- välkomstskärmen (inga flikar)
+WELCOME_LINES = ('Den här skärmen visar och styr ditt Home Assistant:',
+                 '•  lampor, strömbrytare, scener, automationer och hjälpare',
+                 '•  temperaturer och andra värden, med grafer över tid',
+                 'Allt väljs på redigeringssidan, från mobilen eller datorn:')
+
+
+def draw_welcome(img, url, ip=None):
+    """Visas när panelen inte har några flikar: vad panelen gör och hur man kommer igång (adress och QR-kod)."""
+    x0, y0, x1, y1 = 16, 86, 1008, 556
+    clear(img, x0, y0, x1, y1)
+    bbox(img, x0, y0, x1, y1, 20, T.CARD, T.CARD_BORDER, 1)
+    tx = 52
+    text(img, tx, 160, 'Välkommen', 300, 52, T.TEXT)
+    text(img, tx, 198, 'simple_ha_dash, en pekskärm för Home Assistant', 400, 20, T.MUTED)
+    y = 254
+    for i, line in enumerate(WELCOME_LINES):
+        col = T.TEXT if i in (0, 3) else T.MUTED
+        text(img, tx, y, line, 400, 20, col)
+        y += 34 if i in (0, 1) else 52
+    qr_x = 1008 - 40 - QR_TARGET
+    maxw = qr_x - tx - 24
+    if url:
+        text(img, tx, y + 4, fit(url, 500, 30, maxw), 500, 30, T.BLUE_L)
+        text(img, tx, y + 44, 'Skanna QR-koden eller skriv adressen i en webbläsare på samma nät.', 400, 16, T.FOOT)
+        size = draw_qr(img, qr_x, 150, url)
+        _centered(img, qr_x + size // 2, 150 + size + 26, 'Skanna med mobilens kamera', 400, 14, T.MUTED)
+    else:
+        text(img, tx, y + 4, 'Hittar ingen nätverksadress.', 500, 24, T.WARN)
+        text(img, tx, y + 40, 'Kontrollera att plattan är ansluten till nätet.', 400, 18, T.FOOT)
 
 
 # ---------------------------------------------------------------- inställningssidan (kugghjulet)

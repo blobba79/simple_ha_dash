@@ -1,5 +1,7 @@
 """Konfiguration (JSON-fil på dash, /etc/dash-panel/config.json): vilka flikar, lampor och sensorer som
-visas, deras ordning och visningsnamn. Läses och valideras här; sparas atomiskt (temporär fil + fsync + rename)."""
+visas, deras ordning och visningsnamn. Två sorters flikar: 'lights' (knappar: lampor, strömbrytare, fläktar,
+automationer, hjälpare av/på, scener, skript och knappar) och 'sensors' (värden: sensorer, binära sensorer och
+hjälpare med värde). Läses och valideras här; sparas atomiskt (temporär fil + fsync + rename)."""
 import copy
 import json
 import os
@@ -11,8 +13,19 @@ MAX_TABS = 4
 MAX_LAMPS = 7           # 8 celler på lampfliken: sju lampor + "Alla lampor"
 MAX_LAMPS_NO_ALL = 8    # utan "Alla lampor" (show_all: false) går alla åtta cellerna till lampor
 MAX_SENSORS = 11        # två stora kort + 3x3 små
-TAB_ICONS = ('Lightbulb', 'LightbulbMultiple', 'Thermometer')
-LIGHT_DOMAINS = ('light', 'switch')
+MAX_GRAPH = 3           # kurvor i en graf
+GRAPH_HOURS = (6, 24, 168, 720)     # intervallen på grafen: 6 tim, 24 tim, 7 dagar, 30 dagar
+TAB_TYPES = ('lights', 'sensors', 'graph')
+TAB_ICONS = ('Lightbulb', 'LightbulbMultiple', 'Thermometer', 'ChartLine', 'WaterPercent', 'Home', 'Sofa', 'Flower',
+             'Paw', 'Robot', 'Palette', 'ToggleSwitch', 'Fan')
+LIGHT_DOMAINS = ('light', 'switch')     # räknas som lampor ("3 tända", knappen "Alla lampor")
+TOGGLE_DOMAINS = LIGHT_DOMAINS + ('fan', 'input_boolean', 'automation', 'media_player', 'climate', 'humidifier')  # på/av
+ACTION_DOMAINS = ('scene', 'script', 'button', 'input_button')              # tryck = kör/aktivera
+BUTTON_DOMAINS = TOGGLE_DOMAINS + ACTION_DOMAINS        # det som får ligga på en knappflik (typen 'lights')
+VALUE_DOMAINS = ('sensor', 'binary_sensor', 'input_number', 'counter', 'input_select', 'input_text', 'input_datetime',
+                 'number', 'select', 'climate', 'cover', 'lock', 'media_player', 'person', 'device_tracker', 'weather',
+                 'sun', 'update', 'timer', 'fan', 'humidifier', 'water_heater')     # visas som värde (bara läsning)
+GRAPH_DOMAINS = ('sensor', 'input_number', 'counter', 'number')     # har ett tal som Home Assistant sparar historik för
 
 DEFAULTS = {
     'version': 1,
@@ -56,21 +69,29 @@ def normalize(raw):
     warns = []
     cfg = _merge(DEFAULTS, {k: v for k, v in (raw or {}).items() if k != 'tabs'})
     tabs_in = (raw or {}).get('tabs')
-    if not isinstance(tabs_in, list):
+    if not isinstance(tabs_in, list):           # ingen lista alls (ny installation): två tomma standardflikar
         tabs_in = copy.deepcopy(DEFAULTS['tabs'])
+    # en tom lista är ett medvetet val: panelen visar då en välkomstskärm
     tabs, used = [], set()
     for t in tabs_in[:MAX_TABS]:
         if not isinstance(t, dict):
             continue
-        typ = t.get('type') if t.get('type') in ('lights', 'sensors') else 'lights'
-        title = str(t.get('title') or ('Belysning' if typ == 'lights' else 'Temperaturer'))[:24]
-        icon = t.get('icon') if t.get('icon') in TAB_ICONS else ('Lightbulb' if typ == 'lights' else 'Thermometer')
+        typ = t.get('type') if t.get('type') in TAB_TYPES else 'lights'
+        title = str(t.get('title') or {'lights': 'Belysning', 'sensors': 'Temperaturer', 'graph': 'Graf'}[typ])[:24]
+        icon = t.get('icon') if t.get('icon') in TAB_ICONS else \
+            {'lights': 'Lightbulb', 'sensors': 'Thermometer', 'graph': 'ChartLine'}[typ]
         tab = {'id': _slug(t.get('id') or title, used), 'title': title, 'type': typ, 'icon': icon, 'items': []}
         if typ == 'lights':
             tab['all_label'] = str(t.get('all_label') or 'Alla lampor')[:24]
             tab['show_all'] = t['show_all'] if isinstance(t.get('show_all'), bool) else True    # visa knappen "Alla lampor"?
+        if typ == 'graph':
+            try:
+                h = int(t.get('hours', 24))
+            except (TypeError, ValueError):
+                h = 24
+            tab['hours'] = h if h in GRAPH_HOURS else 24
         seen = set()
-        limit = (MAX_LAMPS if tab['show_all'] else MAX_LAMPS_NO_ALL) if typ == 'lights' else MAX_SENSORS
+        limit = {'lights': MAX_LAMPS_NO_ALL, 'sensors': MAX_SENSORS, 'graph': MAX_GRAPH}[typ]  # "Alla lampor" räknas nedan
         for it in t.get('items') or []:
             if not isinstance(it, dict):
                 continue
@@ -79,11 +100,14 @@ def normalize(raw):
                 continue
             eid = str(it.get('entity_id') or '').strip()
             dom = eid.split('.')[0] if '.' in eid else ''
-            if typ == 'lights' and dom not in LIGHT_DOMAINS:
-                warns.append('hoppade över %r (ingen lampa/strömbrytare)' % eid)
+            if typ == 'lights' and dom not in BUTTON_DOMAINS:
+                warns.append('hoppade över %r (går inte att trycka på)' % eid)
                 continue
-            if typ == 'sensors' and dom != 'sensor':
-                warns.append('hoppade över %r (ingen sensor)' % eid)
+            if typ == 'sensors' and dom not in VALUE_DOMAINS:
+                warns.append('hoppade över %r (inget värde att visa)' % eid)
+                continue
+            if typ == 'graph' and dom not in GRAPH_DOMAINS:
+                warns.append('hoppade över %r (inget tal att rita)' % eid)
                 continue
             if eid in seen:
                 continue
@@ -96,7 +120,7 @@ def normalize(raw):
                 col = it.get('color')
                 if isinstance(col, str) and _HEX.match(col):
                     item['color'] = '#' + col.lstrip('#').lower()
-                if isinstance(it.get('dimmable'), bool):
+                if isinstance(it.get('dimmable'), bool) and dom == 'light':
                     item['dimmable'] = it['dimmable']
             else:
                 try:
@@ -109,9 +133,12 @@ def normalize(raw):
                 warns.append('fliken "%s" rymmer högst %d, resten hoppades över' % (title, limit))
                 break
             tab['items'].append(item)
+        if typ == 'lights' and tab['show_all'] and len(tab['items']) > MAX_LAMPS and \
+                any(it['entity_id'].split('.')[0] in LIGHT_DOMAINS for it in tab['items']):
+            # knappen "Alla lampor" visas bara om fliken har lampor, och tar då den åttonde platsen
+            warns.append('fliken "%s" rymmer högst %d med knappen för alla lampor, resten hoppades över' % (title, MAX_LAMPS))
+            del tab['items'][MAX_LAMPS:]
         tabs.append(tab)
-    if not tabs:
-        tabs = copy.deepcopy(DEFAULTS['tabs'])
     cfg['tabs'] = tabs
     try:
         cfg['ui']['dim_step'] = max(1, min(50, int(cfg['ui']['dim_step'])))

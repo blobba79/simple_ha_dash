@@ -132,7 +132,7 @@ class App(object):
                                   'display': self.display, 'battery': self.battery.sample,
                                   'games_dir': self.games_dir, 'gamedata_dir': self.gamedata_dir,
                                   'game_sync': self.game_sync,
-                                  'updater': self.updater})
+                                  'updater': self.updater, 'ha': lambda: self.ha})
         self.ha = HASession(self.loop, cfg['ha']['url'], cfg['ha']['token_file'], self.panel.on_ha_status,
                             self.panel.on_ha_full, self.panel.on_ha_update, log=log,
                             hb_interval=cfg['ui']['heartbeat'])

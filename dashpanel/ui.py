@@ -10,7 +10,7 @@ import os
 import time
 import traceback
 
-from . import __version__, gamelib, gamesdk, model, theme as T, views as V
+from . import __version__, colorui as CU, gamelib, gamesdk, graph as G, model, theme as T, views as V
 from .gfx import H, W, fit, hex_rgb
 
 NAV_MAX_END = 802.0         # flikraden får inte nå klockan (klocka, spelikon och kugghjul sitter till höger)
@@ -48,6 +48,19 @@ class Panel(object):
         self.log = log or (lambda *a: None)
         self.store = model.Store()
         self.pending = {}                       # entity_id -> {state, pct, deadline, seq}
+        self.fired = {}                         # scener, skript, knappar: entity_id -> {phase: busy|ok|fail, until}
+        self._fired_timer = None
+        self.graph_cache = {}                   # (ids, timmar) -> {'status', 'data', 'at', 't1'}
+        self.graph_hours = {}                   # flikens id (eller 'one:<entity_id>') -> valt intervall
+        self.graph_item = None                  # värdekortet vars graf visas (screen 'graph')
+        self.dim_mode = 'bright'                # dimvyns läge: bright | ct (vitt) | color
+        self.dim_modes = {}                     # entity_id -> senast valda läge (under körningen)
+        self.drag_color = None                  # {'ct': kelvin} eller {'hs': (nyans, mättnad)} medan fingret drar
+        self.color_hold = {}                    # entity_id -> {'ct'|'hs': värde, 'until': tid}: visas tills HA hunnit svara
+        self._color_sent = None
+        self._color_t = -1.0
+        self._color_timer = None
+        self._graph_tab = 0
         self.last_pct = {}
         self.last_rgb = {}
         self.drawn = {}
@@ -118,6 +131,9 @@ class Panel(object):
         self._clock = model.make_clock(cfg['locale']['timezone'])
         if self.tab_idx >= len(cfg['tabs']):
             self.tab_idx = 0
+        if self.screen == 'graph' and self.graph_item is not None and \
+                self.graph_item.get('entity_id') not in {it.get('entity_id') for t in cfg['tabs'] for it in t['items']}:
+            self.screen = 'tab'
         if self.screen == 'dim' and self._find_item(self.dim_eid) is None:
             self.screen = 'tab'
         keep = {it['entity_id'] for t in cfg['tabs'] for it in t['items'] if it.get('entity_id')}
@@ -149,8 +165,8 @@ class Panel(object):
 
     def stop(self):
         self._stopped = True
-        for name in ('_stale_timer', '_pending_timer', '_refresh_handle', '_clock_timer', '_dim_timer', '_drag_timer',
-                     '_state_timer', '_wifi_timer', '_batt_timer', '_bye_timer', '_off_timer', '_update_timer', '_prescan_timer'):
+        for name in ('_stale_timer', '_pending_timer', '_refresh_handle', '_clock_timer', '_dim_timer', '_drag_timer', '_color_timer',
+                     '_state_timer', '_wifi_timer', '_batt_timer', '_bye_timer', '_off_timer', '_update_timer', '_prescan_timer', '_fired_timer'):
             h = getattr(self, name)
             if h is not None:
                 h.cancel()
@@ -202,7 +218,7 @@ class Panel(object):
             self.store.states[eid] = st
             self._remember(eid, st)
         p = self.pending.get(eid)
-        if p is not None and self._matches(p, st):
+        if p is not None and self._matches(p, st, eid):
             del self.pending[eid]
             self._arm_pending_timer()
         self.request_refresh()
@@ -218,10 +234,10 @@ class Panel(object):
                 self.last_rgb[eid] = tuple(int(v) for v in rgb)
 
     @staticmethod
-    def _matches(p, st):
+    def _matches(p, st, eid=''):
         if st is None:
             return False
-        s = st.get('state')
+        s = model.onoff(eid, st.get('state')) if eid else st.get('state')
         if p['state'] == 'off':
             return s == 'off'
         if s != 'on':
@@ -328,26 +344,33 @@ class Panel(object):
     def lamp_info(self, item):
         eid = item['entity_id']
         dom = eid.split('.', 1)[0]
+        kind = model.button_kind(eid)
         known = self.store.states.get(eid)
         attrs = (known or {}).get('attributes') or {}
         name = item.get('name') or attrs.get('friendly_name') or eid
+        icons = model.BUTTON_ICONS.get(dom, ('Lightbulb', 'LightbulbOff'))
+        if kind == 'action':
+            return self._action_info(eid, dom, name, known, icons)
         if isinstance(item.get('dimmable'), bool):
             dimmable = item['dimmable'] and dom == 'light'
         else:
             dimmable = model.dimmable_from_attrs(dom, attrs)
-        rgb = attrs.get('rgb_color')
-        if not (isinstance(rgb, (list, tuple)) and len(rgb) == 3):
-            rgb = self.last_rgb.get(eid)
-        if rgb is None and item.get('color'):
-            rgb = hex_rgb(item['color'])
-        pal = T.lamp_palette(rgb)
+        if kind == 'lamp':
+            rgb = attrs.get('rgb_color')
+            if not (isinstance(rgb, (list, tuple)) and len(rgb) == 3):
+                rgb = self.last_rgb.get(eid)
+            if rgb is None and item.get('color'):
+                rgb = hex_rgb(item['color'])
+            pal = T.lamp_palette(rgb)
+        else:
+            pal = T.lamp_palette(hex_rgb(item['color'])) if item.get('color') else T.BLUE_PAL
         pct = None
         if self.stale:
             state = 'stale'
         else:
             raw = known.get('state') if known else None
-            state = raw if raw in ('on', 'off') else 'na'
-            if state == 'on':
+            state = model.onoff(eid, raw) or 'na'
+            if state == 'on' and dom == 'light':
                 pct = model.brightness_pct(attrs)
             p = self.pending.get(eid)
             if p is not None and state in ('on', 'off'):
@@ -364,12 +387,46 @@ class Panel(object):
         else:
             status = self._stale_text()
         return {'eid': eid, 'name': name, 'state': state, 'status': status, 'pal': pal, 'dimmable': dimmable,
-                'pct': pct}
+                'pct': pct, 'kind': kind, 'icons': icons, 'busy': False, 'done': False}
+
+    def _action_info(self, eid, dom, name, known, icons):
+        """Scen, skript eller knapp: inget på/av, ett tryck kör den. Läget 'on' visas medan ett skript körs och en
+        stund efter ett tryck som gick igenom; 'off' är vila. Okänt läge (en scen som aldrig körts) går bra."""
+        f = self.fired.get(eid)
+        busy = bool(f and f['phase'] == 'busy')
+        done = bool(f and f['phase'] == 'ok')
+        raw = known.get('state') if known else None
+        if self.stale:
+            state, status = 'stale', self._stale_text()
+        elif known is None or raw == 'unavailable':
+            state, status = 'na', 'Ej tillgänglig'
+        elif busy:
+            state, status = 'off', 'Skickar …'
+        elif f and f['phase'] == 'fail':
+            state, status = 'off', 'Gick inte, försök igen'
+        elif done:
+            state, status = 'on', model.ACTION_DONE.get(dom, 'Klart')
+        elif dom == 'script' and raw == 'on':
+            state, status = 'on', 'Körs …'
+        else:
+            state, status = 'off', model.ACTION_LABEL.get(dom, '')
+        return {'eid': eid, 'name': name, 'state': state, 'status': status, 'pal': T.BLUE_PAL, 'dimmable': False,
+                'pct': None, 'kind': 'action', 'icons': icons, 'busy': busy, 'done': done}
+
+    def _lamps(self, tab, infos=None):
+        """Lamporna på fliken (ljus och strömbrytare): det är dem "3 tända" räknar och "Alla lampor" slår om."""
+        infos = infos if infos is not None else [self.lamp_info(it) for it in tab['items']]
+        return [i for i in infos if i['kind'] == 'lamp']
+
+    def _show_all(self, tab):
+        """Knappen "Alla lampor" visas om den är vald och fliken har minst en lampa."""
+        return tab.get('show_all', True) and any(model.button_kind(it.get('entity_id')) == 'lamp' for it in tab['items'])
 
     def _stale_text(self):
         return 'Ansluter …' if (self.store.status == 'connecting' and not self._ever_live) else 'Ingen kontakt'
 
     def _all_vm(self, tab, infos):
+        infos = self._lamps(tab, infos)
         n_on = sum(1 for i in infos if i['state'] == 'on')
         n_avail = sum(1 for i in infos if i['state'] in ('on', 'off'))
         if self.stale:
@@ -388,14 +445,20 @@ class Panel(object):
         label = item.get('name') or attrs.get('friendly_name') or eid
         unit = item.get('unit') or attrs.get('unit_of_measurement') or ''
         value = None
+        textual = False
+        dom = model.domain(eid)
         if known is not None and not self.stale:
             raw = known.get('state')
-            num = model.format_number(raw, item.get('decimals', 1), self.sep)
+            num = None if dom in ('binary_sensor', 'input_datetime', 'input_text', 'input_select') else \
+                model.format_number(raw, item.get('decimals', 1), self.sep)
             if num is not None:
                 value = num
-            elif raw not in (None, '', 'unavailable', 'unknown'):
-                value, unit = str(raw), ''
-        return label, value, unit
+            else:
+                txt = model.value_text(eid, raw, attrs)
+                if txt is not None:
+                    value, unit, textual = txt, '', True
+        iname = model.value_icon(eid, attrs, item.get('unit') or attrs.get('unit_of_measurement') or '')
+        return label, value, unit, iname, textual
 
     def _nav_tabs(self):
         tabs = []
@@ -404,12 +467,14 @@ class Panel(object):
             d = {'title': t['title'], 'icon': t['icon']}
             n = 0
             if t['type'] == 'lights' and not self.stale:
-                n = sum(1 for it in t['items'] if self.lamp_info(it)['state'] == 'on')
+                n = sum(1 for i in self._lamps(t) if i['state'] == 'on')
                 if n:
                     d['badge'] = model.count_text(n)
             tabs.append(d)
             counts.append(n)
         geo = V.tab_geometry(tabs)
+        if not geo:
+            return tabs
         if geo and geo[-1]['x'] + geo[-1]['w'] > NAV_MAX_END:
             # får flikarna inte plats: märkena blir bara siffran ("5" i stället för "5 tända") ...
             for d, n in zip(tabs, counts):
@@ -511,6 +576,8 @@ class Panel(object):
             self._draw_bye()
         elif self.screen == 'game':
             self._draw_game()
+        elif self.screen == 'graph':
+            self._draw_graph_screen()
         else:
             self._draw_tab()
 
@@ -531,16 +598,23 @@ class Panel(object):
         idx = self.tab_idx
         key = (tuple((t['title'], t['icon'], t.get('badge'), t.get('tight')) for t in tabs), idx)
         geo = V.tab_geometry(tabs)
-        end = min(V.NAV_RECT[2], int(geo[-1]['x'] + geo[-1]['w']) + 16)
+        end = min(V.NAV_RECT[2], int(geo[-1]['x'] + geo[-1]['w']) + 16) if geo else 0
         self._put('nav', key, (0, V.NAV_RECT[1], max(end, self._nav_end), V.NAV_RECT[3]), lambda: V.draw_nav(img, tabs, idx))
         self._nav_end = end
         hh = model.hhmm(now)
         self._put('clock', hh, V.CLOCK_RECT, lambda: V.draw_clock(img, hh))
         self._draw_gear(False)
         self._draw_game_btn()
+        if not self.cfg['tabs']:
+            url, ip, _ = self._net_info()
+            self._put('welcome', (url, ip), (16, 86, 1008, 556), lambda: V.draw_welcome(img, url, ip))
+            self._draw_footer(now)
+            return
         tab = self.cfg['tabs'][idx]
         if tab['type'] == 'lights':
             self._draw_lights(tab)
+        elif tab['type'] == 'graph':
+            self._draw_graph_tab(tab)
         else:
             self._draw_sensors(tab)
         self._draw_footer(now)
@@ -558,10 +632,15 @@ class Panel(object):
             return
         infos = [self.lamp_info(it) for it in items]
         for i, inf in enumerate(infos):
-            vm = V.LampVM('lamp', inf['name'], inf['state'], inf['status'], inf['pal'], inf['dimmable'],
-                          self.pressed == ('cell', i))
+            vm = V.LampVM('action' if inf['kind'] == 'action' else 'lamp', inf['name'], inf['state'], inf['status'],
+                          inf['pal'], inf['dimmable'], self.pressed == ('cell', i), inf['icons'], inf['busy'], inf['done'])
             self._put(('cell', i), vm.key(), V.cell_rect(i), lambda i=i, vm=vm: V.draw_lamp_cell(img, i, vm))
-        if not tab.get('show_all', True):
+        if not self._show_all(tab):
+            if ('cell', len(items)) in self.drawn:
+                del self.drawn[('cell', len(items))]
+                r = V.cell_rect(len(items))
+                V.clear(img, *r)
+                self.s.mark(r)
             return
         n = len(items)
         avm = self._all_vm(tab, infos)
@@ -577,10 +656,10 @@ class Panel(object):
         for k in range(2):
             if k >= len(items) or items[k].get('placeholder'):
                 continue
-            label, value, unit = self.sensor_info(items[k])
-            self._put(('big', k), ('big', label, value, unit), V.BIG_CARDS[k],
-                      lambda k=k, label=label, value=value, unit=unit:
-                      V.draw_temp_big(img, k, label, value or '', unit, value is None))
+            label, value, unit, iname, textual = self.sensor_info(items[k])
+            self._put(('big', k), ('big', label, value, unit, iname, textual), V.BIG_CARDS[k],
+                      lambda k=k, label=label, value=value, unit=unit, iname=iname, textual=textual:
+                      V.draw_temp_big(img, k, label, value or '', unit, value is None, iname, textual))
         variant = 0
         for k in range(9):
             j = 2 + k
@@ -592,10 +671,10 @@ class Panel(object):
                           lambda k=k, v=variant: V.draw_temp_skeleton(img, k, v))
                 variant += 1
                 continue
-            label, value, unit = self.sensor_info(it)
-            self._put(('small', k), ('sm', label, value, unit), V.small_rect(k),
-                      lambda k=k, label=label, value=value, unit=unit:
-                      V.draw_temp_small(img, k, label, value or '', unit, value is None))
+            label, value, unit, iname, textual = self.sensor_info(it)
+            self._put(('small', k), ('sm', label, value, unit, iname, textual), V.small_rect(k),
+                      lambda k=k, label=label, value=value, unit=unit, iname=iname, textual=textual:
+                      V.draw_temp_small(img, k, label, value or '', unit, value is None, iname, textual))
 
     def _draw_dim(self):
         img = self.s.img
@@ -634,10 +713,30 @@ class Panel(object):
         top_status = 'På' if state == 'on' else ('Av' if state == 'off' else inf['status'])
         self._put('top', (state, top_status, palkey), V.TOP_ROW_RECT,
                   lambda: V.draw_dim_top(img, state, top_status, pal))
-        self._put('value', (value_text, dimv), V.VALUE_RECT, lambda: V.draw_dim_value(img, value_text, dimv))
-        pressed = self.pressed[1] if (self.pressed and self.pressed[0] == 'btn') else None
         enabled = state in ('on', 'off')
-        self._put('btn', (pressed, enabled), DIM_BTN_RECT, lambda: V.draw_dim_buttons(img, pressed, enabled))
+        attrs = (self.store.states.get(eid) or {}).get('attributes') or {}
+        caps = CU.caps(attrs)
+        modes = CU.modes_for(caps)
+        mode = self.dim_mode if self.dim_mode in modes else 'bright'
+        cpress = self.pressed[1] if (self.pressed and self.pressed[0] == 'cpre') else None
+        if len(modes) > 1:
+            self._put('modes', (tuple(modes), mode, enabled), (40, CU.MODES_Y[0] - 4, 728, CU.MODES_Y[1] + 2),
+                      lambda: CU.draw_modes(img, modes, mode, enabled))
+        if mode == 'ct':
+            k = self._color_value(eid, attrs, 'ct')
+            on = enabled        # även släckt: ett val tänder lampan
+            self._put('ct', (k, caps['ct'], on, cpress), CU.CONTENT_RECT, lambda: CU.draw_ct(img, k, caps['ct'], on, cpress))
+        elif mode == 'color':
+            hs = self._color_value(eid, attrs, 'hs')
+            on = enabled
+            self._put('hs', (hs, on, cpress), CU.CONTENT_RECT, lambda: CU.draw_hs(img, hs, on, cpress))
+        else:
+            if len(modes) > 1:
+                self._put('value', ('m', value_text, dimv), CU.VALUE2_RECT, lambda: CU.draw_bright_value(img, value_text, dimv))
+            else:
+                self._put('value', (value_text, dimv), V.VALUE_RECT, lambda: V.draw_dim_value(img, value_text, dimv))
+            pressed = self.pressed[1] if (self.pressed and self.pressed[0] == 'btn') else None
+            self._put('btn', (pressed, enabled), DIM_BTN_RECT, lambda: V.draw_dim_buttons(img, pressed, enabled))
         self._put('slider', (spct, state, palkey), V.SLIDER_RECT, lambda: V.draw_slider(img, spct, state, pal))
         self._draw_footer(now)
 
@@ -672,7 +771,7 @@ class Panel(object):
             return
         if self._off_timer is None:
             self._arm_off_timer()
-        if self.screen in ('dim', 'settings', 'confirm', 'game'):
+        if self.screen in ('dim', 'settings', 'confirm', 'game', 'graph'):
             self._arm_dim_timer()
         if self.screen == 'game':
             self._game_touch(kind, x, y)
@@ -695,6 +794,10 @@ class Panel(object):
             return ('game', None, V.GAME_HIT)
         if self.screen == 'dim':
             return self._hit_dim(x, y)
+        if self.screen == 'graph':
+            if self._back_rect and _inside(self._back_rect, x, y, 8):
+                return ('back', None, self._back_rect)
+            return self._hit_ranges(x, y)
         if self.screen == 'settings':
             return self._hit_settings(x, y)
         if self.screen == 'confirm':
@@ -709,12 +812,18 @@ class Panel(object):
                 if _inside(r, x, y):
                     return ('tab', i, r)
             return None
+        if not self.cfg['tabs']:
+            return None
         tab = self.cfg['tabs'][self.tab_idx]
-        if tab['type'] != 'lights' or not tab['items']:
+        if tab['type'] == 'graph':
+            return self._hit_ranges(x, y)
+        if tab['type'] == 'sensors':
+            return self._hit_values(tab, x, y)
+        if not tab['items']:
             return None
         infos = [self.lamp_info(it) for it in tab['items']]
         for i, inf in enumerate(infos):
-            if inf['state'] not in ('on', 'off'):
+            if inf['state'] not in ('on', 'off') or inf['busy']:
                 continue
             z = V.lamp_zones(i, inf['dimmable'])
             for r in z['toggle']:
@@ -723,7 +832,7 @@ class Panel(object):
             for r in z['dim']:
                 if _inside(r, x, y):
                     return ('dim', i, r)
-        if not tab.get('show_all', True):
+        if not self._show_all(tab):
             return None
         n = len(infos)
         r = V.cell_rect(n)
@@ -742,12 +851,36 @@ class Panel(object):
             return None
         if _inside(DIM_TOGGLE_HIT, x, y):
             return ('dtoggle', None, DIM_TOGGLE_HIT)
+        if _inside(DIM_SLIDER_HIT, x, y):
+            return ('slider', None, DIM_SLIDER_HIT)
+        attrs = (self.store.states.get(inf['eid']) or {}).get('attributes') or {}
+        caps = CU.caps(attrs)
+        modes = CU.modes_for(caps)
+        if len(modes) > 1:
+            for m, r in CU.mode_rects(modes):
+                if _inside(r, x, y, 4):
+                    return ('dmode', m, r)
+        mode = self.dim_mode if self.dim_mode in modes else 'bright'
+        if mode == 'ct':
+            r = CU.CT_BAR
+            if _inside((r[0] - 20, r[1] - 30, r[2] + 20, r[3] + 26), x, y):
+                return ('ctbar', None, r)
+            for (k, _), r in CU.preset_rects(CU.ct_presets(caps['ct'])):
+                if _inside(r, x, y):
+                    return ('cpre', k, r)
+            return None
+        if mode == 'color':
+            r = CU.HS_FIELD
+            if _inside((r[0] - 16, r[1] - 10, r[2] + 16, r[3] + 10), x, y):
+                return ('hsfield', None, r)
+            for it, r in CU.preset_rects(CU.HS_PRESETS):
+                if _inside(r, x, y):
+                    return ('cpre', (it[0], it[1]), r)
+            return None
         if _inside(V.BTN_MINUS, x, y):
             return ('btn', 'Minus', V.BTN_MINUS)
         if _inside(V.BTN_PLUS, x, y):
             return ('btn', 'Plus', V.BTN_PLUS)
-        if _inside(DIM_SLIDER_HIT, x, y):
-            return ('slider', None, DIM_SLIDER_HIT)
         return None
 
     def _hit_settings(self, x, y):
@@ -775,6 +908,8 @@ class Panel(object):
             return ('cell', t[1])
         if t[0] == 'btn':
             return ('btn', t[1])
+        if t[0] == 'cpre':
+            return ('cpre', t[1])
         if t[0] == 'gear':
             return ('gear', 0)
         if t[0] == 'game':
@@ -789,6 +924,9 @@ class Panel(object):
         if t is None:
             return
         self.touch = {'t': t, 'inside': True}
+        if t[0] in ('ctbar', 'hsfield'):
+            self._color_drag(t[0], x, y)
+            return
         if t[0] == 'slider':
             self._sent_t, self._sent_pct = -1.0, None
             self._slider_move(y)
@@ -806,6 +944,9 @@ class Panel(object):
         if tc is None:
             return
         t = tc['t']
+        if t[0] in ('ctbar', 'hsfield'):
+            self._color_drag(t[0], x, y)
+            return
         if t[0] == 'slider':
             self._slider_move(y)
             return
@@ -825,6 +966,9 @@ class Panel(object):
         if tc is None:
             return
         t = tc['t']
+        if t[0] in ('ctbar', 'hsfield'):
+            self._color_up()
+            return
         if t[0] == 'slider':
             self._slider_up()
             return
@@ -857,6 +1001,22 @@ class Panel(object):
         if kind == 'all':
             self._toggle_all(self.cfg['tabs'][self.tab_idx])
             return
+        if kind == 'grange':
+            self._set_graph_hours(t[1])
+            return
+        if kind == 'dmode':
+            self.dim_mode = t[1]
+            if self.dim_eid:
+                self.dim_modes[self.dim_eid] = t[1]
+            self.render_all()
+            return
+        if kind == 'cpre':
+            v = t[1]
+            self._color_send({'hs': tuple(v)} if isinstance(v, tuple) else {'ct': v}, final=True)
+            return
+        if kind == 'vcard':
+            self._open_graph(self.cfg['tabs'][self.tab_idx]['items'][t[1]])
+            return
         if kind == 'gear':
             if self.screen in ('settings', 'confirm'):
                 self._close_settings()
@@ -881,6 +1041,9 @@ class Panel(object):
                 self._do_power(self.confirm_kind)
             return
         if kind == 'back':
+            if self.screen == 'graph':
+                self._close_graph()
+                return
             if self.screen == 'confirm':
                 self._back_to_settings()
             elif self.screen == 'settings':
@@ -918,7 +1081,7 @@ class Panel(object):
         ip, _, port = host.rpartition(':')
         return url, (ip or host), port
 
-    def _header(self, title, back_label):
+    def _header(self, title, back_label, gear_active=True):
         img = self.s.img
 
         def head():
@@ -928,7 +1091,7 @@ class Panel(object):
         self._put('head', (title, back_label), (0, 10, V.NAV_RECT[2], 82), head)
         hh = model.hhmm(self.now())
         self._put('clock', hh, V.CLOCK_RECT, lambda: V.draw_clock(img, hh))
-        self._draw_gear(True)
+        self._draw_gear(gear_active)
         self._draw_game_btn()
 
     def _draw_settings(self):
@@ -1451,16 +1614,208 @@ class Panel(object):
             self.display.screen_on()
         self._arm_off_timer()
 
+    # ------------------------------------------------------------ grafer
+    def _hit_ranges(self, x, y):
+        for h, _, r in G.range_rects():
+            if _inside(r, x, y, 4):
+                return ('grange', h, r)
+        return None
+
+    def _hit_values(self, tab, x, y):
+        """Tryck på ett värdekort med ett tal öppnar grafen för det."""
+        for i, it in enumerate(tab['items']):
+            if i >= 11 or it.get('placeholder') or model.domain(it.get('entity_id')) not in G.GRAPH_DOMAINS:
+                continue
+            r = V.BIG_CARDS[i] if i < 2 else V.small_rect(i - 2)
+            if _inside(r, x, y):
+                st = self.store.states.get(it['entity_id'])
+                if st is None or model.format_number((st or {}).get('state'), 1) is None and not self.stale:
+                    return None
+                return ('vcard', i, r)
+        return None
+
+    def _graph_key(self, tab=None):
+        return ('one:' + self.graph_item['entity_id']) if tab is None else ('tab:' + tab['id'])
+
+    def _current_hours(self, tab=None):
+        default = tab.get('hours', 24) if tab is not None else 24
+        return self.graph_hours.get(self._graph_key(tab), default)
+
+    def _set_graph_hours(self, h):
+        if self.screen == 'graph':
+            self.graph_hours[self._graph_key()] = h
+        elif self.cfg['tabs']:
+            self.graph_hours[self._graph_key(self.cfg['tabs'][self.tab_idx])] = h
+        self.render_all()
+
+    def _open_graph(self, item):
+        self.graph_item = dict(item)
+        self._graph_tab = self.tab_idx
+        self.screen = 'graph'
+        self.render_all()
+        self._arm_dim_timer()
+
+    def _close_graph(self):
+        if self.screen != 'graph':
+            return
+        self.screen = 'tab'
+        self.graph_item = None
+        self.touch = None
+        self.pressed = None
+        self.render_all()
+
+    def _graph_series(self, items):
+        out = []
+        for it in items:
+            eid = it['entity_id']
+            st = self.store.states.get(eid)
+            attrs = (st or {}).get('attributes') or {}
+            now = None
+            if st is not None and not self.stale:
+                v = model.format_number(st.get('state'), 6, '.')
+                now = float(v.replace('−', '-')) if v is not None else None
+            out.append({'id': eid, 'name': it.get('name') or attrs.get('friendly_name') or eid,
+                        'unit': it.get('unit') or attrs.get('unit_of_measurement') or '', 'decimals': it.get('decimals', 1),
+                        'now': now})
+        return out
+
+    def _graph_data(self, ids, hours):
+        """Hämtad data för (ids, timmar), och startar en hämtning om den saknas eller är gammal."""
+        key = (tuple(ids), hours)
+        c = self.graph_cache.get(key)
+        now = self.loop.time()
+        if c is None or (c['status'] != 'loading' and now - c['at'] > G.CACHE_SECONDS):
+            if c is None:
+                c = {'status': 'loading', 'data': None, 'at': now, 't1': time.time()}
+            else:
+                c = dict(c, status='loading', at=now)
+            self.graph_cache[key] = c
+            if len(self.graph_cache) > 8:
+                for k in sorted(self.graph_cache, key=lambda k: self.graph_cache[k]['at'])[:len(self.graph_cache) - 8]:
+                    if k != key:
+                        del self.graph_cache[k]
+            self.loop.create_task(self._fetch_graph(key))
+        return c
+
+    async def _fetch_graph(self, key):
+        ids, hours = key
+        ha = self.hints.get('ha')
+        ha = ha() if callable(ha) else ha
+        t1 = time.time()
+        data = None
+        if ha is not None and getattr(ha, 'connected', False):
+            try:
+                data = await G.fetch(ha, list(ids), hours, t1)
+            except Exception as e:      # ska aldrig fälla panelen
+                self.log('kunde inte hämta historik:', repr(e))
+                data = None
+        if self._stopped:
+            return
+        old = self.graph_cache.get(key) or {}
+        if data is None:
+            self.graph_cache[key] = {'status': 'error', 'data': old.get('data'), 'at': self.loop.time() - G.CACHE_SECONDS + 20,
+                                     't1': old.get('t1', t1)}
+        else:
+            self.graph_cache[key] = {'status': 'ok', 'data': data, 'at': self.loop.time(), 't1': t1}
+        if self.screen == 'graph' or (self.screen == 'tab' and self.cfg['tabs'] and
+                                      self.cfg['tabs'][self.tab_idx]['type'] in ('graph',)):
+            self.request_refresh(urgent=True)
+
+    def _draw_graph(self, items, hours):
+        img = self.s.img
+        series = self._graph_series(items)
+        ids = [s['id'] for s in series]
+        c = self._graph_data(ids, hours)
+        data = c.get('data') or {}
+        nostats = False
+        for s in series:
+            s['data'] = data.get(s['id'])
+            nostats = nostats or bool((s['data'] or {}).get('nostats'))
+        status = c['status'] if c['status'] != 'ok' else None
+        if status is None and nostats and not any((s['data'] or {}).get('points') for s in series):
+            status = 'Home Assistant sparar ingen långtidsstatistik för det här. Välj 7 dagar eller kortare.'
+        t1 = c.get('t1') or time.time()
+        t0 = t1 - hours * 3600.0
+        pr = None
+        nows = tuple(None if s['now'] is None else round(s['now'], 3) for s in series)
+        key = ('graph', tuple(ids), hours, c['status'], id(c.get('data')), t1, pr, self.sep,
+               tuple((s['name'], s['unit'], s['decimals']) for s in series))
+        local = model.make_local(self.cfg['locale']['timezone'])
+        # kurvan ritas om bara när datan ändras; siffrorna (nu) för sig när ett värde ändras
+        self._put('graph', key, G.CARD, lambda: G.draw(img, series, hours, t0, t1, local, self.sep, status, pr))
+        self._put('gstats', key + (nows,), G.STATS_RECT, lambda: G.draw_stats(img, series, t1, local, self.sep))
+
+    def _draw_graph_tab(self, tab):
+        if not tab['items']:
+            self._draw_empty('Inga sensorer valda för grafen')
+            return
+        self._draw_graph(tab['items'], self._current_hours(tab))
+
+    def _draw_graph_screen(self):
+        it = self.graph_item
+        tabs = self.cfg['tabs']
+        back = tabs[self._graph_tab]['title'] if self._graph_tab < len(tabs) else 'Tillbaka'
+        st = self.store.states.get(it['entity_id'])
+        name = it.get('name') or ((st or {}).get('attributes') or {}).get('friendly_name') or it['entity_id']
+        self._header(name, back, gear_active=False)
+        self._draw_graph([it], self._current_hours())
+        self._draw_footer(self.now())
+
     # ------------------------------------------------------------ åtgärder
     def _toggle(self, item):
         inf = self.lamp_info(item)
-        if inf['state'] not in ('on', 'off'):
+        if inf['state'] not in ('on', 'off') or inf['busy']:
             self.request_refresh(urgent=True)
+            return
+        if inf['kind'] == 'action':
+            self._fire(inf['eid'])
             return
         self._command([inf['eid']], inf['state'] != 'on')
 
+    # scener, skript och knappar: ett tryck = ett anrop, resultatet syns en stund i cellen
+    def _fire(self, eid):
+        dom = model.domain(eid)
+        svc = model.ACTION_SERVICE.get(dom)
+        if not svc:
+            return
+        self.fired[eid] = {'phase': 'busy', 'until': self.loop.time() + 15.0}
+        self._arm_fired_timer()
+        self.request_refresh(urgent=True)
+        self.loop.create_task(self._fire_send(dom, svc, eid))
+
+    async def _fire_send(self, dom, svc, eid):
+        try:
+            ok = await self.call_service(dom, svc, [eid], None)
+        except Exception as e:      # ska aldrig fälla panelen
+            self.log('fel vid anrop till Home Assistant:', repr(e))
+            ok = False
+        if self._stopped:
+            return
+        self.fired[eid] = {'phase': 'ok' if ok else 'fail', 'until': self.loop.time() + (2.5 if ok else 4.0)}
+        self._arm_fired_timer()
+        self.request_refresh(urgent=True)
+
+    def _arm_fired_timer(self):
+        if self._fired_timer is not None:
+            self._fired_timer.cancel()
+            self._fired_timer = None
+        if not self.fired or self._stopped:
+            return
+        nxt = min(f['until'] for f in self.fired.values())
+        self._fired_timer = self.loop.call_later(max(0.0, nxt - self.loop.time()) + 0.01, self._fired_tick)
+
+    def _fired_tick(self):
+        self._fired_timer = None
+        now = self.loop.time()
+        gone = [e for e, f in self.fired.items() if f['until'] <= now]
+        for e in gone:
+            del self.fired[e]
+        self._arm_fired_timer()
+        if gone:
+            self.request_refresh(urgent=True)
+
     def _toggle_all(self, tab):
-        infos = [self.lamp_info(it) for it in tab['items']]
+        infos = self._lamps(tab)
         avail = [i for i in infos if i['state'] in ('on', 'off')]
         if not avail:
             self.request_refresh(urgent=True)
@@ -1473,6 +1828,8 @@ class Panel(object):
         self.dim_tab = self.tab_idx
         self.screen = 'dim'
         self.drag_pct = None
+        self.drag_color = None
+        self.dim_mode = self.dim_modes.get(self.dim_eid, 'bright')
         self.render_all()
         self._arm_dim_timer()
 
@@ -1486,6 +1843,7 @@ class Panel(object):
         self.touch = None
         self.pressed = None
         self.drag_pct = None
+        self.drag_color = None
         self.render_all()
 
     def _arm_dim_timer(self):
@@ -1493,14 +1851,16 @@ class Panel(object):
         if self._dim_timer is not None:
             self._dim_timer.cancel()
             self._dim_timer = None
-        if self.screen in ('dim', 'settings', 'confirm') and self.dim_timeout > 0:
+        if self.screen in ('dim', 'settings', 'confirm', 'graph') and self.dim_timeout > 0:
             self._dim_timer = self.loop.call_later(self.dim_timeout, self._idle_back)
         elif self.screen == 'game':
             self._dim_timer = self.loop.call_later(GAME_IDLE_SECONDS, self._idle_back)
 
     def _idle_back(self):
         self._dim_timer = None
-        if self.screen == 'dim':
+        if self.screen == 'graph':
+            self._close_graph()
+        elif self.screen == 'dim':
             self._close_dim()
         elif self.screen in ('settings', 'confirm'):
             self._close_settings()
@@ -1517,6 +1877,73 @@ class Panel(object):
             base = self.drag_pct or inf['pct'] or self.last_pct.get(inf['eid']) or 50
             pct = max(1, min(100, base + sign * self.step))
         self._command([inf['eid']], True, pct)
+
+    # färg: vitt (färgtemperatur) och färg (nyans, mättnad)
+    def _color_value(self, eid, attrs, kind):
+        """Det som ska visas: fingrets värde, annars det senast skickade (tills HA hunnit svara), annars HA:s."""
+        if self.drag_color and kind in self.drag_color:
+            return self.drag_color[kind]
+        h = self.color_hold.get(eid)
+        if h and kind in h and h['until'] > self.loop.time():
+            return h[kind]
+        if kind == 'ct':
+            return None if CU.in_color_mode(attrs) else CU.current_ct(attrs)
+        hs = CU.current_hs(attrs)
+        return hs if (hs and CU.in_color_mode(attrs)) else (hs if attrs.get('color_mode') is None else None)
+
+    def _color_drag(self, kind, x, y):
+        found = self._find_item(self.dim_eid)
+        if found is None:
+            return
+        attrs = (self.store.states.get(self.dim_eid) or {}).get('attributes') or {}
+        caps = CU.caps(attrs)
+        if kind == 'ctbar' and caps['ct']:
+            v = {'ct': CU.ct_from_x(x, caps['ct'])}
+        elif kind == 'hsfield':
+            v = {'hs': CU.hs_from_xy(x, y)}
+        else:
+            return
+        if v == self.drag_color:
+            return
+        self.drag_color = v
+        self._color_send(v, final=False)
+        self.request_refresh()
+
+    def _color_up(self):
+        v, self.drag_color = self.drag_color, None
+        if v is not None:
+            self._color_send(v, final=True)
+        self.request_refresh(urgent=True)
+
+    def _color_send(self, v, final):
+        """Skickar färgen (högst ca 4 gånger i sekunden under drag; det sista värdet skickas alltid)."""
+        eid = self.dim_eid
+        if not eid:
+            return
+        now = self.loop.time()
+        hold = dict(v)
+        hold['until'] = now + 3.0
+        self.color_hold[eid] = hold
+        if self._color_timer is not None:
+            self._color_timer.cancel()
+            self._color_timer = None
+        if not final and now - self._color_t < SEND_MIN_INTERVAL:
+            self._color_timer = self.loop.call_later(SEND_MIN_INTERVAL - (now - self._color_t),
+                                                     lambda: self._color_send(v, final=True))
+            return
+        if v == self._color_sent and not final:
+            return
+        self._color_t, self._color_sent = now, v
+        data = {'color_temp_kelvin': int(v['ct'])} if 'ct' in v else {'hs_color': [float(v['hs'][0]), float(v['hs'][1])]}
+        p = self.pending.get(eid)
+        if p is None and model.onoff(eid, (self.store.states.get(eid) or {}).get('state')) == 'off':
+            # färg tänder lampan: visa den tänd direkt (som vid andra tryck)
+            self._seq += 1
+            self.pending[eid] = {'state': 'on', 'pct': None, 'deadline': now + self.confirm, 'seq': self._seq}
+            self._arm_pending_timer()
+        self.loop.create_task(self._send('light', 'turn_on', [eid], data, self._seq))
+        self.request_refresh(urgent=True)
+        self.loop.call_later(3.1, lambda: self.request_refresh())
 
     # reglaget
     @staticmethod

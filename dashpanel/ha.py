@@ -380,12 +380,13 @@ class HASession(object):
             return None
         return res['result']
 
-    async def fetch_registry(self):
-        """Entitetsregistret (vilka enheter som är dolda eller tekniska), bara för redigeringssidan.
-        None om det inte gick (ingen kontakt eller token utan administratörsrätt): då visas allt."""
+    async def fetch_registry(self, kind='entity'):
+        """Ett register ur Home Assistant, bara för redigeringssidan: 'entity' (vilka enheter som är dolda eller
+        tekniska, och deras område), 'area' (områdena) eller 'device' (enheternas område via apparaten).
+        None om det inte gick (ingen kontakt eller token utan administratörsrätt): då visas allt utan områden."""
         if not self.connected:
             return None
-        res = await self.request({'type': 'config/entity_registry/list'}, timeout=30.0)
+        res = await self.request({'type': 'config/%s_registry/list' % kind}, timeout=30.0)
         if not res or not res.get('success') or not isinstance(res.get('result'), list):
             return None
         return res['result']

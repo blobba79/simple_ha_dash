@@ -31,6 +31,8 @@ WARN_D = hex_rgb('3a2a0e')       # "Avsluta" (bärnsten)
 WARN_BORDER = hex_rgb('8a5d12')
 SLIDER_EMPTY = hex_rgb('363636')  # reglagens tomma spår
 STALE_TEXT = hex_rgb('6b6b6b')
+# tänt läge för knappar som inte är lampor (automationer, hjälpare, fläktar, scener): samma blå som "Alla lampor"
+BLUE_PAL = {'main': BLUE_L, 'bg': BLUE_BG, 'circle': BLUE_D, 'border': BLUE_D}
 
 YELLOW = (255, 193, 7)         # #ffc107
 ORANGE = (224, 131, 42)        # #e0832a
