@@ -1,0 +1,10 @@
+[Unit]
+Description=Kolla efter ny version av dash-panel var sjätte timme
+
+[Timer]
+OnBootSec=15min
+OnUnitActiveSec=6h
+RandomizedDelaySec=20min
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,59 @@
+From 45f4cd2864cadf043ba0938ea0e42b70b41a5f28 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sun, 18 Oct 2026 15:56:07 +0200
+Subject: [PATCH 1/2] sunxi: NAND in U-Boot proper on A33 (Q8 tablet) for
+ dash-nand
+
+Match allwinner,sun8i-a23-nand-controller in sunxi_nand (data goes
+through NFC_RAM0 as on A10) and enable the controller with one chip and
+40-bit/1024-byte ECC, the same as Linux uses, in the Q8 A33 tablet
+U-Boot device tree.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01XTGG1GSUkzofnshznl4jjt
+---
+ arch/arm/dts/sun8i-a33-q8-tablet-u-boot.dtsi | 16 ++++++++++++++++
+ drivers/mtd/nand/raw/sunxi_nand.c            |  4 ++++
+ 2 files changed, 20 insertions(+)
+ create mode 100644 arch/arm/dts/sun8i-a33-q8-tablet-u-boot.dtsi
+
+diff --git a/arch/arm/dts/sun8i-a33-q8-tablet-u-boot.dtsi b/arch/arm/dts/sun8i-a33-q8-tablet-u-boot.dtsi
+new file mode 100644
+index 00000000..d310317f
+--- /dev/null
++++ b/arch/arm/dts/sun8i-a33-q8-tablet-u-boot.dtsi
+@@ -0,0 +1,16 @@
++// dash-nand: NAND i U-Boot (Micron L84A, ECC som i Linux: 40 bitar per 1024 byte)
++#include "sunxi-u-boot.dtsi"
++
++&nfc {
++	status = "okay";
++	#address-cells = <1>;
++	#size-cells = <0>;
++
++	nand@0 {
++		reg = <0>;
++		allwinner,rb = <0>;
++		nand-ecc-mode = "hw";
++		nand-ecc-strength = <40>;
++		nand-ecc-step-size = <1024>;
++	};
++};
+diff --git a/drivers/mtd/nand/raw/sunxi_nand.c b/drivers/mtd/nand/raw/sunxi_nand.c
+index 0b5b74dc..2569399e 100644
+--- a/drivers/mtd/nand/raw/sunxi_nand.c
++++ b/drivers/mtd/nand/raw/sunxi_nand.c
+@@ -1817,6 +1817,10 @@ static const struct udevice_id sunxi_nand_ids[] = {
+ 	{
+ 		.compatible = "allwinner,sun4i-a10-nand",
+ 	},
++	{
++		/* A23/A33: data goes through NFC_RAM0, as on A10 */
++		.compatible = "allwinner,sun8i-a23-nand-controller",
++	},
+ 	{ }
+ };
+ 
+-- 
+2.43.0
+

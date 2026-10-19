@@ -1,0 +1,722 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""dash-update: hämtar nya versioner av pekskärmspanelen från GitHub och byter säkert.
+
+Flöde för `apply`:
+  1. hämta grenen (standard: main) grunt (depth 1); över https från det publika repot, eller med deploy key vid git@-adress
+  2. packa upp bredvid (/opt/dash-panel.new) och kontrollera: filer finns, all Python
+     kan tolkas, modulen kan importeras, tjänstefilen oförändrad (annars krävs --with-unit)
+  3. byt katalog (gamla blir /opt/dash-panel.prev) och starta om tjänsten
+  4. vänta på att tjänsten är frisk (uppe, samma process hela fönstret)
+  5. är den inte det: lägg tillbaka förra versionen automatiskt och märk versionen som dålig
+
+Bara standardbiblioteket används. Körs som root på dash. Se update/README.md.
+"""
+import argparse
+import configparser
+import datetime
+import fcntl
+import hashlib
+import json
+import os
+import re
+import shlex
+import shutil
+import socket
+import subprocess
+import sys
+import syslog
+import time
+import urllib.request
+
+CONF_PATH = os.environ.get('DASH_UPDATE_CONFIG', '/etc/dash-update/config.ini')
+
+DEFAULTS = {
+    'repo_url': 'https://github.com/blobba79/simple_ha_dash.git',
+    'ref': 'main',
+    'app_dir': '/opt/dash-panel',
+    'unit': 'dash-panel.service',
+    'unit_installed': '/etc/systemd/system/dash-panel.service',
+    'unit_in_tree': 'systemd/dash-panel.service',
+    'state_dir': '/var/lib/dash-update',
+    'key': '/etc/dash-update/deploy_key',
+    'known_hosts': '/etc/dash-update/known_hosts',
+    'health_seconds': '40',
+    'rollback_health_seconds': '20',
+    'poll_seconds': '1',
+    'smoke_import': 'dashpanel.app',
+    'required': 'dashpanel/__main__.py,dashpanel/app.py,systemd/dash-panel.service',
+    'auto_apply': 'no',
+    'git': 'git',
+    'systemctl': 'systemctl',
+    'systemd_analyze': 'systemd-analyze',
+    'tar': 'tar',
+}
+
+# Avslutskoder
+EXIT_OK, EXIT_ERR, EXIT_ROLLED_BACK, EXIT_BUSY, EXIT_CRITICAL, EXIT_NEEDS_OK, EXIT_DRIFT = 0, 1, 2, 3, 4, 5, 6
+
+
+class UpdateError(Exception):
+    def __init__(self, msg, code=EXIT_ERR):
+        super().__init__(msg)
+        self.code = code
+
+
+class Conf:
+    def __init__(self, path=None):
+        d = dict(DEFAULTS)
+        path = path or CONF_PATH
+        cp = configparser.ConfigParser(interpolation=None)
+        if os.path.exists(path):
+            cp.read(path, encoding='utf-8')
+            if cp.has_section('update'):
+                d.update({k: v.strip() for k, v in cp.items('update')})
+        self.d = d
+        self.path = path
+
+    def __getattr__(self, k):
+        try:
+            return self.__dict__['d'][k]
+        except KeyError:
+            raise AttributeError(k)
+
+    def num(self, k):
+        return float(self.d[k])
+
+    @property
+    def ref_full(self):
+        r = self.d['ref']
+        return r if r.startswith('refs/') else 'refs/heads/' + r
+
+    @property
+    def cache(self):
+        return os.path.join(self.d['state_dir'], 'cache.git')
+
+    @property
+    def new_dir(self):
+        return self.d['app_dir'].rstrip('/') + '.new'
+
+    @property
+    def prev_dir(self):
+        return self.d['app_dir'].rstrip('/') + '.prev'
+
+    @property
+    def failed_dir(self):
+        return self.d['app_dir'].rstrip('/') + '.failed'
+
+
+# ---------------------------------------------------------------- hjälpare
+
+def now_iso():
+    return datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+
+
+def log(msg, level=syslog.LOG_INFO):
+    print(time.strftime('%H:%M:%S ') + msg, flush=True)
+    try:
+        syslog.syslog(level, msg)
+    except Exception:
+        pass
+
+
+def run(cmd, env=None, timeout=120, cwd=None, check=True):
+    try:
+        p = subprocess.run(cmd, env=env, cwd=cwd, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        raise UpdateError('%s tog för lång tid (%d s)' % (' '.join(map(str, cmd[:3])), timeout))
+    except FileNotFoundError:
+        raise UpdateError('programmet %s finns inte' % cmd[0])
+    if check and p.returncode != 0:
+        raise UpdateError('%s misslyckades (%d): %s' % (' '.join(map(str, cmd[:3])), p.returncode,
+                                                         (p.stderr or p.stdout).strip()[-500:]))
+    return p
+
+
+def atomic_write(path, data, mode=0o600):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + '.tmp'
+    with open(tmp, 'w', encoding='utf-8') as f:
+        f.write(data)
+        f.flush()
+        os.fsync(f.fileno())
+    os.chmod(tmp, mode)
+    os.replace(tmp, path)
+
+
+def load_json(path, default):
+    try:
+        with open(path, encoding='utf-8') as f:
+            return json.load(f)
+    except Exception:
+        return default
+
+
+def status_path(c):
+    return os.path.join(c.state_dir, 'status.json')
+
+
+def bad_path(c):
+    return os.path.join(c.state_dir, 'bad.json')
+
+
+def save_status(c, **kw):
+    st = load_json(status_path(c), {})
+    st.update(kw)
+    atomic_write(status_path(c), json.dumps(st, indent=1, ensure_ascii=False, sort_keys=True) + '\n')
+    return st
+
+
+def bad_list(c):
+    return load_json(bad_path(c), [])
+
+
+def mark_bad(c, commit, reason):
+    lst = [b for b in bad_list(c) if b.get('commit') != commit]
+    lst.append({'commit': commit, 'reason': reason, 'time': now_iso()})
+    atomic_write(bad_path(c), json.dumps(lst[-20:], indent=1, ensure_ascii=False) + '\n')
+
+
+def installed_info(c):
+    return load_json(os.path.join(c.app_dir, 'VERSION.json'), {})
+
+
+# ---------------------------------------------------------------- git
+
+def git_env(c):
+    env = os.environ.copy()
+    env['GIT_TERMINAL_PROMPT'] = '0'
+    env['LC_ALL'] = 'C'
+    if c.repo_url.startswith(('git@', 'ssh://')):
+        if not os.path.exists(c.key):
+            raise UpdateError('deploy key saknas (%s): kör "dash-update keygen"' % c.key)
+        env['GIT_SSH_COMMAND'] = ' '.join([
+            'ssh', '-i', shlex.quote(c.key), '-o', 'IdentitiesOnly=yes', '-o', 'BatchMode=yes',
+            '-o', 'StrictHostKeyChecking=yes', '-o', 'UserKnownHostsFile=' + shlex.quote(c.known_hosts),
+            '-o', 'ConnectTimeout=15'])
+    return env
+
+
+def git(c, *args, timeout=120, check=True):
+    return run([c.git, '--git-dir', c.cache] + list(args), env=git_env(c), timeout=timeout, check=check)
+
+
+def dir_size(path):
+    total = 0
+    for root, _dirs, files in os.walk(path):
+        for f in files:
+            try:
+                total += os.path.getsize(os.path.join(root, f))
+            except OSError:
+                pass
+    return total
+
+
+def ensure_cache(c):
+    os.makedirs(c.state_dir, mode=0o700, exist_ok=True)
+    if os.path.isdir(c.cache) and dir_size(c.cache) > 30 * 1024 * 1024:
+        shutil.rmtree(c.cache)          # cachen är engångs: börja om när den vuxit
+    if not os.path.isdir(c.cache):
+        run([c.git, 'init', '--bare', '-q', c.cache], env=git_env(c))
+
+
+def ls_remote(c):
+    p = run([c.git, 'ls-remote', c.repo_url, c.ref_full], env=git_env(c), timeout=60)
+    line = p.stdout.strip().splitlines()
+    if not line:
+        raise UpdateError('grenen %s finns inte i %s' % (c.ref, c.repo_url))
+    return line[0].split()[0]
+
+
+def fetch(c, what):
+    ensure_cache(c)
+    git(c, 'fetch', '-q', '--depth', '1', '--no-tags', c.repo_url, what, timeout=240)
+    return git(c, 'rev-parse', 'FETCH_HEAD^{commit}').stdout.strip()
+
+
+def export_tree(c, sha, dest):
+    os.makedirs(dest)
+    env = git_env(c)
+    a = subprocess.Popen([c.git, '--git-dir', c.cache, 'archive', '--format=tar', sha],
+                         stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+    t = subprocess.run([c.tar, '-x', '--no-same-owner', '--no-same-permissions', '-C', dest],
+                       stdin=a.stdout, capture_output=True)
+    a.stdout.close()
+    err = a.stderr.read().decode(errors='replace')
+    a.wait()
+    if a.returncode != 0 or t.returncode != 0:
+        raise UpdateError('kunde inte packa upp %s: %s %s' % (sha[:12], err.strip(), t.stderr.decode(errors='replace').strip()))
+
+
+def commit_meta(c, sha):
+    p = git(c, 'log', '-1', '--format=%cI%n%s', sha)
+    parts = p.stdout.strip().split('\n', 1)
+    return parts[0], (parts[1] if len(parts) > 1 else '')
+
+
+# ---------------------------------------------------------------- träd
+
+def normalize_perms(tree):
+    """Som på dash i dag: bara root kommer åt filerna (0700 för körbara/mappar, 0600 för resten)."""
+    for root, dirs, files in os.walk(tree):
+        os.chmod(root, 0o700)
+        for f in files:
+            p = os.path.join(root, f)
+            if os.path.islink(p):
+                continue
+            os.chmod(p, 0o700 if os.stat(p).st_mode & 0o100 else 0o600)
+
+
+def tree_hash(tree):
+    """Innehållshash av ett träd (sökvägar + filinnehåll, inte rättigheter). VERSION/VERSION.json i roten,
+    __pycache__ och .pyc räknas inte: de skrivs av uppdateraren respektive Python."""
+    h = hashlib.sha256()
+    for root, dirs, files in os.walk(tree):
+        dirs[:] = sorted(d for d in dirs if d != '__pycache__')
+        for f in sorted(files):
+            if (root == tree and f in ('VERSION', 'VERSION.json')) or f.endswith('.pyc'):
+                continue
+            p = os.path.join(root, f)
+            h.update(os.path.relpath(p, tree).encode() + b'\0')
+            with open(p, 'rb') as fh:
+                h.update(hashlib.sha256(fh.read()).digest())
+    return h.hexdigest()
+
+
+def installed_drift(c):
+    """None om koden i app_dir är precis den som dash-update la dit (eller om det inte går att veta);
+    annars (väntad hash, faktisk hash)."""
+    want = installed_info(c).get('tree_sha256')
+    if not want or not os.path.isdir(c.app_dir):
+        return None
+    have = tree_hash(c.app_dir)
+    return None if have == want else (want, have)
+
+
+def verify_tree(c, tree):
+    for rel in [r.strip() for r in c.required.split(',') if r.strip()]:
+        if not os.path.isfile(os.path.join(tree, rel)):
+            raise UpdateError('filen %s saknas i den nya versionen' % rel)
+    n = 0
+    for root, dirs, files in os.walk(tree):
+        dirs[:] = [d for d in dirs if d != '__pycache__']
+        for f in files:
+            if f.endswith('.py'):
+                p = os.path.join(root, f)
+                try:
+                    with open(p, 'rb') as fh:
+                        compile(fh.read(), p, 'exec')
+                except (SyntaxError, ValueError) as e:
+                    raise UpdateError('syntaxfel i %s: %s' % (os.path.relpath(p, tree), e))
+                n += 1
+    if c.smoke_import:
+        code = ("import sys, os\nsys.dont_write_bytecode = True\nsys.path.insert(0, %r)\n"
+                "os.environ['DASH_FB'] = 'none'\nimport %s\n" % (tree, c.smoke_import))
+        p = run([sys.executable, '-I', '-c', code], cwd='/', timeout=90, check=False)
+        if p.returncode != 0:
+            raise UpdateError('import av %s misslyckades: %s' % (c.smoke_import, (p.stderr or p.stdout).strip()[-400:]))
+    return n
+
+
+def read_bytes(path):
+    try:
+        with open(path, 'rb') as f:
+            return f.read()
+    except OSError:
+        return None
+
+
+# ---------------------------------------------------------------- systemd
+
+def sctl(c, *args, check=True, timeout=90):
+    return run([c.systemctl] + list(args), check=check, timeout=timeout)
+
+
+def show(c):
+    out = sctl(c, 'show', c.unit, '-p', 'ActiveState', '-p', 'SubState', '-p', 'MainPID', '-p', 'Result',
+               check=False).stdout
+    d = {}
+    for line in out.splitlines():
+        if '=' in line:
+            k, v = line.split('=', 1)
+            d[k.strip()] = v.strip()
+    return d
+
+
+def restart_service(c):
+    sctl(c, 'reset-failed', c.unit, check=False)
+    p = sctl(c, 'restart', c.unit, check=False, timeout=120)
+    return p.returncode == 0, (p.stderr or p.stdout).strip()
+
+
+def wait_healthy(c, seconds):
+    """Frisk = uppe och samma process hela fönstret."""
+    t0 = time.time()
+    pid = None
+    why = 'aldrig uppe'
+    poll = max(0.05, c.num('poll_seconds'))
+    while time.time() - t0 < seconds:
+        s = show(c)
+        up = (s.get('ActiveState') == 'active' and s.get('SubState') == 'running'
+              and int(s.get('MainPID') or 0) > 0)
+        if up:
+            p = int(s['MainPID'])
+            if pid is None:
+                pid = p
+            elif p != pid:
+                return False, 'tjänsten startade om av sig själv (process %d → %d)' % (pid, p)
+        else:
+            if pid is not None:
+                return False, 'tjänsten föll bort (%s/%s, %s)' % (s.get('ActiveState'), s.get('SubState'), s.get('Result'))
+            why = 'inte uppe (%s/%s)' % (s.get('ActiveState'), s.get('SubState'))
+        time.sleep(poll)
+    if pid is None:
+        return False, why
+    return True, 'frisk i %d s (process %d)' % (seconds, pid)
+
+
+# ---------------------------------------------------------------- lås
+
+class Lock:
+    def __init__(self, c):
+        os.makedirs(c.state_dir, mode=0o700, exist_ok=True)
+        self.f = open(os.path.join(c.state_dir, 'lock'), 'w')
+
+    def __enter__(self):
+        try:
+            fcntl.flock(self.f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            raise UpdateError('en annan uppdatering pågår redan', EXIT_BUSY)
+        return self
+
+    def __exit__(self, *a):
+        self.f.close()
+
+
+# ---------------------------------------------------------------- byte och återställning
+
+def swap_in(c, staging):
+    app = c.app_dir.rstrip('/')
+    if os.path.isdir(c.prev_dir):
+        shutil.rmtree(c.prev_dir)
+    if os.path.isdir(app):
+        os.rename(app, c.prev_dir)
+    os.rename(staging, app)
+
+
+def swap_back(c, unit_backup):
+    """Lägg tillbaka .prev; den misslyckade versionen sparas som .failed."""
+    app = c.app_dir.rstrip('/')
+    if not os.path.isdir(c.prev_dir):
+        raise UpdateError('ingen tidigare version att gå tillbaka till (%s saknas)' % c.prev_dir, EXIT_CRITICAL)
+    if os.path.isdir(c.failed_dir):
+        shutil.rmtree(c.failed_dir)
+    if os.path.isdir(app):
+        os.rename(app, c.failed_dir)
+    os.rename(c.prev_dir, app)
+    if unit_backup is not None:
+        atomic_write_bytes(c.unit_installed, unit_backup, 0o644)
+        sctl(c, 'daemon-reload', check=False)
+
+
+def atomic_write_bytes(path, data, mode):
+    tmp = path + '.tmp'
+    with open(tmp, 'wb') as f:
+        f.write(data)
+        f.flush()
+        os.fsync(f.fileno())
+    os.chmod(tmp, mode)
+    os.replace(tmp, path)
+
+
+def do_apply(c, args):
+    with Lock(c):
+        return _apply_locked(c, args)
+
+
+def _apply_locked(c, args):
+    inst = installed_info(c)
+    inst_commit = inst.get('commit')
+    bad = {b['commit'] for b in bad_list(c)}
+    drift = installed_drift(c)
+    if drift and not args.force:
+        msg = ('koden i %s skiljer sig från installerad version %s: någon har ändrat den utanför dash-update '
+               '(t.ex. med ett tgz-paket eller för hand). En uppdatering skulle skriva över ändringarna. '
+               'Lägg in dem i GitHub-repot först, eller kör med --force för att skriva över.'
+               % (c.app_dir, (inst_commit or '?')[:12]))
+        log('NEKAD: ' + msg, syslog.LOG_WARNING)
+        save_status(c, last_check=now_iso(), last_result='nekad: lokala ändringar i ' + c.app_dir, error=None)
+        return EXIT_DRIFT
+    if drift:
+        log('--force: skriver över lokala ändringar i %s' % c.app_dir, syslog.LOG_WARNING)
+    source_dir = args.from_dir
+    sha = None
+    if args.commit and not re.fullmatch(r'[0-9a-f]{40}', args.commit):
+        raise UpdateError('--commit kräver hela incheckningens 40 tecken (git rev-parse visar den)')
+
+    if os.path.isdir(c.new_dir):
+        shutil.rmtree(c.new_dir)
+
+    if source_dir:
+        if not os.path.isdir(source_dir):
+            raise UpdateError('%s är ingen katalog' % source_dir)
+        shutil.copytree(source_dir, c.new_dir, ignore=shutil.ignore_patterns('__pycache__', '*.pyc', '.git'))
+        sha = 'lokal-' + tree_hash(c.new_dir)[:12]
+        cdate, subject = now_iso(), 'lokal katalog %s' % os.path.basename(os.path.abspath(source_dir))
+    else:
+        log('hämtar %s från %s' % (args.commit or c.ref, c.repo_url))
+        sha = fetch(c, args.commit or c.ref_full)
+        cdate, subject = commit_meta(c, sha)
+
+    if sha == inst_commit and not args.force:
+        log('redan på senaste versionen: %s' % sha[:12])
+        shutil.rmtree(c.new_dir, ignore_errors=True)
+        save_status(c, last_check=now_iso(), latest_commit=sha, installed_commit=inst_commit,
+                    update_available=False, last_result='ingen ändring', error=None)
+        return EXIT_OK
+    if sha in bad and not args.force and not args.commit:
+        log('hoppar över %s: den har tidigare misslyckats (använd --force för att försöka igen)' % sha[:12])
+        shutil.rmtree(c.new_dir, ignore_errors=True)
+        return EXIT_OK
+
+    log('ny version: %s (%s) "%s"' % (sha[:12], cdate[:10], subject))
+    if not source_dir:
+        export_tree(c, sha, c.new_dir)
+
+    try:
+        n = verify_tree(c, c.new_dir)
+        log('kontroll ok: %d Python-filer tolkade, %s går att importera' % (n, c.smoke_import or '-'))
+        new_unit = read_bytes(os.path.join(c.new_dir, c.unit_in_tree))
+        old_unit = read_bytes(c.unit_installed)
+        unit_changed = new_unit is not None and new_unit != old_unit
+        if unit_changed and not args.with_unit:
+            shutil.rmtree(c.new_dir, ignore_errors=True)
+            msg = ('den nya versionen har en ändrad tjänstefil (%s); läs igenom och kör igen med --with-unit'
+                   % c.unit_in_tree)
+            log(msg, syslog.LOG_WARNING)
+            save_status(c, last_check=now_iso(), latest_commit=sha, installed_commit=inst_commit,
+                        update_available=True, last_result='kräver godkännande: ' + msg, error=None)
+            return EXIT_NEEDS_OK
+        if unit_changed:
+            tmp = c.new_dir + '.unitcheck.service'
+            atomic_write_bytes(tmp, new_unit, 0o644)
+            p = run([c.systemd_analyze, 'verify', tmp], check=False)
+            os.unlink(tmp)
+            if p.returncode != 0:
+                raise UpdateError('systemd-analyze verify nekade nya tjänstefilen: %s' % (p.stderr or p.stdout).strip()[-300:])
+            log('tjänstefilen har ändrats och godkänts av systemd-analyze')
+    except UpdateError as e:
+        shutil.rmtree(c.new_dir, ignore_errors=True)
+        log('avvisad före bytet: %s' % e, syslog.LOG_ERR)
+        if not source_dir:
+            mark_bad(c, sha, 'avvisad vid kontroll: %s' % e)
+        save_status(c, last_check=now_iso(), latest_commit=sha, installed_commit=inst_commit,
+                    update_available=False, last_result='avvisad: %s' % e, error=None)
+        e.code = EXIT_ERR
+        raise
+
+    normalize_perms(c.new_dir)
+    meta = {'tree_sha256': tree_hash(c.new_dir), 'commit': sha, 'short': sha[:12], 'date': cdate, 'subject': subject, 'ref': c.ref if not source_dir else None,
+            'installed_at': now_iso(), 'previous_commit': inst_commit}
+    atomic_write(os.path.join(c.new_dir, 'VERSION.json'), json.dumps(meta, indent=1, ensure_ascii=False) + '\n', 0o600)
+    atomic_write(os.path.join(c.new_dir, 'VERSION'), '%s %s\n' % (cdate[:10], sha[:12]), 0o600)
+
+    if args.dry_run:
+        log('--dry-run: skulle byta %s → %s (inget ändrat)' % ((inst_commit or 'okänd')[:12], sha[:12]))
+        shutil.rmtree(c.new_dir, ignore_errors=True)
+        return EXIT_OK
+
+    unit_backup = read_bytes(c.unit_installed) if unit_changed else None
+    log('byter %s → %s' % ((inst_commit or 'okänd')[:12], sha[:12]))
+    swap_in(c, c.new_dir)
+    if unit_changed:
+        atomic_write_bytes(c.unit_installed, new_unit, 0o644)
+        sctl(c, 'daemon-reload')
+
+    ok, why = restart_service(c)
+    if ok:
+        ok, why = wait_healthy(c, int(c.num('health_seconds')))
+    else:
+        why = 'omstart misslyckades: ' + why
+
+    if ok:
+        log('klart: %s är installerad och %s' % (sha[:12], why))
+        save_status(c, last_check=now_iso(), latest_commit=sha, installed_commit=sha, update_available=False,
+                    last_result='ok: %s' % why, last_applied=now_iso(), error=None)
+        return EXIT_OK
+
+    log('MISSLYCKAD uppdatering till %s: %s – återställer förra versionen' % (sha[:12], why), syslog.LOG_ERR)
+    if not source_dir:
+        mark_bad(c, sha, why)
+    try:
+        swap_back(c, unit_backup)
+    except UpdateError as e:
+        log('KRITISKT: %s' % e, syslog.LOG_CRIT)
+        save_status(c, last_result='kritiskt: %s' % e)
+        return EXIT_CRITICAL
+    ok2, why2 = restart_service(c)
+    if ok2:
+        ok2, why2 = wait_healthy(c, int(c.num('rollback_health_seconds')))
+    if ok2:
+        log('återställd: %s igen, %s' % ((inst_commit or 'förra versionen')[:12], why2))
+        save_status(c, last_check=now_iso(), latest_commit=sha, installed_commit=inst_commit, update_available=False,
+                    last_result='återställd efter misslyckad uppdatering till %s: %s' % (sha[:12], why), error=None)
+        return EXIT_ROLLED_BACK
+    log('KRITISKT: förra versionen blev inte frisk heller (%s). Se: journalctl -u %s' % (why2, c.unit), syslog.LOG_CRIT)
+    save_status(c, last_result='kritiskt: återställningen blev inte frisk: %s' % why2)
+    return EXIT_CRITICAL
+
+
+def do_rollback(c, args):
+    with Lock(c):
+        if not os.path.isdir(c.prev_dir):
+            raise UpdateError('det finns ingen tidigare version (%s saknas)' % c.prev_dir)
+        app = c.app_dir.rstrip('/')
+        cur = installed_info(c).get('commit')
+        tmp = app + '.swap'
+        if os.path.isdir(tmp):
+            shutil.rmtree(tmp)
+        os.rename(app, tmp)
+        os.rename(c.prev_dir, app)
+        os.rename(tmp, c.prev_dir)       # byt plats: en andra rollback går framåt igen
+        now = installed_info(c).get('commit')
+        log('rullade tillbaka %s → %s' % ((cur or '?')[:12], (now or '?')[:12]))
+        ok, why = restart_service(c)
+        if ok:
+            ok, why = wait_healthy(c, int(c.num('rollback_health_seconds')))
+        save_status(c, installed_commit=now, update_available=False,
+                    last_result=('manuell återgång: ' if ok else 'manuell återgång misslyckades: ') + why)
+        log(why)
+        return EXIT_OK if ok else EXIT_CRITICAL
+
+
+# ---------------------------------------------------------------- kommandon
+
+def cmd_check(c, args):
+    try:
+        sha = ls_remote(c)
+    except UpdateError as e:
+        save_status(c, last_check=now_iso(), error=str(e))
+        log('kontroll misslyckades: %s' % e, syslog.LOG_WARNING)
+        return EXIT_ERR
+    inst = installed_info(c).get('commit')
+    bad = {b['commit'] for b in bad_list(c)}
+    avail = sha != inst and sha not in bad
+    save_status(c, last_check=now_iso(), latest_commit=sha, installed_commit=inst, update_available=avail,
+                latest_is_bad=sha in bad, error=None)
+    if avail:
+        log('ny version finns: %s (installerad: %s)' % (sha[:12], (inst or 'okänd')[:12]))
+    elif sha in bad:
+        log('senaste versionen %s har tidigare misslyckats och hoppas över' % sha[:12])
+    else:
+        log('uppdaterad (%s)' % sha[:12])
+    return EXIT_OK
+
+
+def cmd_auto(c, args):
+    rc = cmd_check(c, args)
+    st = load_json(status_path(c), {})
+    if rc == EXIT_OK and st.get('update_available') and c.auto_apply.lower() in ('yes', 'ja', 'true', '1'):
+        ns = argparse.Namespace(commit=None, from_dir=None, with_unit=False, dry_run=False, force=False)
+        return do_apply(c, ns)
+    return rc
+
+
+def cmd_status(c, args):
+    inst = installed_info(c)
+    st = load_json(status_path(c), {})
+    bad = bad_list(c)
+    s = show(c)
+    if args.json:
+        print(json.dumps({'installed': inst, 'status': st, 'bad': bad, 'service': s,
+                          'local_changes': bool(installed_drift(c))}, indent=1, ensure_ascii=False))
+        return EXIT_OK
+    print('Installerad:   %s %s  "%s"' % (inst.get('short', '(okänd)'), (inst.get('date') or '')[:10], inst.get('subject', '')))
+    print('Gren:          %s  (%s)' % (c.ref, c.repo_url))
+    print('Senast kollat: %s' % st.get('last_check', '(aldrig)'))
+    if st.get('latest_commit'):
+        print('Senaste på GH: %s%s' % (st['latest_commit'][:12], '  ← NY VERSION FINNS' if st.get('update_available') else ''))
+    if st.get('last_result'):
+        print('Senaste körning: %s' % st['last_result'])
+    if st.get('error'):
+        print('Fel vid kontroll: %s' % st['error'])
+    if bad:
+        print('Dåliga versioner (hoppas över): %s' % ', '.join(b['commit'][:12] for b in bad))
+    print('Tjänst:        %s: %s/%s (process %s)' % (c.unit, s.get('ActiveState'), s.get('SubState'), s.get('MainPID')))
+    print('Förra versionen: %s' % (c.prev_dir if os.path.isdir(c.prev_dir) else '(finns inte)'))
+    if inst.get('tree_sha256'):
+        print('Lokala ändringar: %s' % ('JA, koden i %s skiljer sig från installerad version (apply nekas utan --force)' % c.app_dir
+                                        if installed_drift(c) else 'nej'))
+    print('Automatik:     %s' % ('uppdaterar själv' if c.auto_apply.lower() in ('yes', 'ja', 'true', '1') else 'bara kontroll, du bestämmer (dash-update apply)'))
+    return EXIT_OK
+
+
+def github_slug(url):
+    m = re.search(r'github\.com[:/](.+?)(?:\.git)?$', url)
+    return m.group(1) if m else None
+
+
+def refresh_hostkeys(c):
+    if 'github.com' not in c.repo_url:
+        return
+    try:
+        with urllib.request.urlopen('https://api.github.com/meta', timeout=20) as r:
+            keys = json.load(r).get('ssh_keys') or []
+    except Exception as e:
+        log('kunde inte hämta GitHubs värdnycklar (%s); behåller befintliga' % e, syslog.LOG_WARNING)
+        return
+    if keys:
+        atomic_write(c.known_hosts, ''.join('github.com %s\n' % k for k in keys), 0o644)
+        log('GitHubs värdnycklar uppdaterade (%d st, hämtade över TLS från api.github.com/meta)' % len(keys))
+
+
+def cmd_keygen(c, args):
+    os.makedirs(os.path.dirname(c.key), mode=0o700, exist_ok=True)
+    if not os.path.exists(c.key):
+        run(['ssh-keygen', '-q', '-t', 'ed25519', '-N', '', '-C', 'dash-update@%s' % socket.gethostname(), '-f', c.key])
+        log('ny deploy key skapad (den privata delen lämnar aldrig enheten)')
+    refresh_hostkeys(c)
+    pub = read_bytes(c.key + '.pub').decode().strip()
+    slug = github_slug(c.repo_url)
+    print('\nPublik nyckel (lägg in som Deploy key, UTAN skrivrätt):\n\n  %s\n' % pub)
+    if slug:
+        print('GitHub: https://github.com/%s/settings/keys → "Add deploy key"\n'
+              '  Title: dash, Key: raden ovan, låt "Allow write access" vara AVKRYSSAD.' % slug)
+    return EXIT_OK
+
+
+def cmd_refresh_hostkeys(c, args):
+    refresh_hostkeys(c)
+    return EXIT_OK
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog='dash-update', description=__doc__.split('\n')[0])
+    sub = ap.add_subparsers(dest='cmd', required=True)
+    p = sub.add_parser('status', help='visa installerad version och läge')
+    p.add_argument('--json', action='store_true')
+    sub.add_parser('check', help='kolla om en ny version finns (ändrar inget på panelen)')
+    sub.add_parser('auto', help='för timern: kolla, och uppdatera bara om auto_apply = yes')
+    p = sub.add_parser('apply', help='hämta, kontrollera, byta och starta om (med återställning vid fel)')
+    p.add_argument('--commit', help='installera exakt denna incheckning (t.ex. för att gå tillbaka)')
+    p.add_argument('--from-dir', help='installera från en lokal katalog i stället för GitHub')
+    p.add_argument('--with-unit', action='store_true', help='tillåt att tjänstefilen byts (systemd-analyze kontrollerar först)')
+    p.add_argument('--dry-run', action='store_true', help='hämta och kontrollera, men byt inte')
+    p.add_argument('--force', action='store_true', help='installera även om versionen redan är installerad eller märkt dålig')
+    sub.add_parser('rollback', help='gå tillbaka till förra versionen (en gång till går framåt igen)')
+    sub.add_parser('keygen', help='skapa deploy key (om den saknas) och visa den publika delen')
+    sub.add_parser('refresh-hostkeys', help='hämta GitHubs värdnycklar på nytt')
+    args = ap.parse_args(argv)
+    syslog.openlog('dash-update')
+    c = Conf()
+    fn = {'status': cmd_status, 'check': cmd_check, 'auto': cmd_auto, 'apply': do_apply, 'rollback': do_rollback,
+          'keygen': cmd_keygen, 'refresh-hostkeys': cmd_refresh_hostkeys}[args.cmd]
+    try:
+        return fn(c, args)
+    except UpdateError as e:
+        log('FEL: %s' % e, syslog.LOG_ERR)
+        return e.code
+
+
+if __name__ == '__main__':
+    sys.exit(main())

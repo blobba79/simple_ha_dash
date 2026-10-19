@@ -1,0 +1,33 @@
+From 4a47d2236195c413925d2b61a3adfa5a5ef9600f Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sun, 18 Oct 2026 21:48:51 +0200
+Subject: [PATCH 4/4] ARM: dts: dash-nand: keep two pio interrupts (this kernel
+ has two IRQ banks)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01XTGG1GSUkzofnShZnL4Jjt
+---
+ .../arm/boot/dts/allwinner/sun8i-a33-q8-tablet-dashnand.dts | 6 ++----
+ 1 file changed, 2 insertions(+), 4 deletions(-)
+
+diff --git a/arch/arm/boot/dts/allwinner/sun8i-a33-q8-tablet-dashnand.dts b/arch/arm/boot/dts/allwinner/sun8i-a33-q8-tablet-dashnand.dts
+index 090e51664..5f9389425 100644
+--- a/arch/arm/boot/dts/allwinner/sun8i-a33-q8-tablet-dashnand.dts
++++ b/arch/arm/boot/dts/allwinner/sun8i-a33-q8-tablet-dashnand.dts
+@@ -100,11 +100,9 @@ &touchscreen {
+ 	status = "okay";
+ };
+ 
++/* Obs: dashs Armbian-dtb har tre avbrott på pio (SPI 11, 15, 17) för en Armbian-ändring med tre
++ * avbrottsbankar. Den här kärnan har två (PB, PG); tre poster ger fel bank -> låst kärna. */
+ &pio {
+-	interrupts = <GIC_SPI 11 IRQ_TYPE_LEVEL_HIGH>,
+-		     <GIC_SPI 15 IRQ_TYPE_LEVEL_HIGH>,
+-		     <GIC_SPI 17 IRQ_TYPE_LEVEL_HIGH>;
+-
+ 	touch-wake-hog {
+ 		gpio-hog;
+ 		gpios = <7 9 GPIO_ACTIVE_HIGH>;
+-- 
+2.43.0
+

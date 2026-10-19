@@ -1,0 +1,128 @@
+From 588f60db9be91badbbd1d746ffdb48b358749d7f Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sun, 18 Oct 2026 15:29:39 +0200
+Subject: [PATCH 1/4] mtd: rawnand: micron: add shared-page scheme for L84A MLC
+
+Add the shared (paired) page mapping of Micron L84A MLC NAND
+(MT29F64G08CBAB[A/B] and family: 8192+744 byte pages, 256 pages per
+block) from the datasheet, Table 20 "Shared Pages". This allows
+partitions with "slc-mode" to use SLC emulation, so UBI can attach.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01XTGG1GSUkzofnshznl4jjt
+---
+ drivers/mtd/nand/raw/nand_micron.c | 91 ++++++++++++++++++++++++++++++
+ 1 file changed, 91 insertions(+)
+
+diff --git a/drivers/mtd/nand/raw/nand_micron.c b/drivers/mtd/nand/raw/nand_micron.c
+index c01928819..b8c1b69fe 100644
+--- a/drivers/mtd/nand/raw/nand_micron.c
++++ b/drivers/mtd/nand/raw/nand_micron.c
+@@ -474,6 +474,95 @@ static int micron_supports_on_die_ecc(struct nand_chip *chip)
+ 	return MICRON_ON_DIE_SUPPORTED;
+ }
+ 
++
++/*
++ * Micron L84A MLC (MT29F64G08CBAB[A/B], MT29F128G08CFAB[A/B], ...):
++ * shared pages according to the datasheet (Table 20 "Shared Pages"):
++ * 0/6, 1/7, 2, 3, 4/10, 5/11, then k/k+6 for every k >= 8 with
++ * k % 4 in {0, 1} up to 244/250 and 245/251, and finally the unpaired
++ * pages 248, 249, 252, 253, 254 and 255. Group 0 = lower (or unpaired)
++ * page, group 1 = upper page.
++ */
++static bool micron_l84a_is_upper(int page)
++{
++	return page >= 6 && page <= 251 && (page & 2);
++}
++
++static int micron_l84a_lower_index(int page)
++{
++	int n, uppers = 0;
++
++	if (page > 6) {
++		n = min(page, 252) - 6;
++		uppers = 2 * (n / 4) + min(n % 4, 2);
++	}
++	return page - uppers;
++}
++
++static int micron_l84a_lower_page(int pair)
++{
++	if (pair < 6)
++		return pair;
++	if (pair < 126)
++		return 8 + 4 * ((pair - 6) / 2) + ((pair - 6) & 1);
++	switch (pair) {
++	case 126: return 248;
++	case 127: return 249;
++	case 128: return 252;
++	case 129: return 253;
++	case 130: return 254;
++	case 131: return 255;
++	}
++	return -EINVAL;
++}
++
++static int micron_l84a_get_info(struct mtd_info *mtd, int page,
++				struct mtd_pairing_info *info)
++{
++	if (micron_l84a_is_upper(page)) {
++		info->group = 1;
++		info->pair = micron_l84a_lower_index(page - 6);
++	} else {
++		info->group = 0;
++		info->pair = micron_l84a_lower_index(page);
++	}
++	return 0;
++}
++
++static int micron_l84a_get_wunit(struct mtd_info *mtd,
++				 const struct mtd_pairing_info *info)
++{
++	int lower = micron_l84a_lower_page(info->pair);
++
++	if (lower < 0)
++		return lower;
++	if (!info->group)
++		return lower;
++	if (lower <= 1 || (lower >= 4 && lower <= 245 && !(lower & 2)))
++		return lower + 6;
++	return -EINVAL;
++}
++
++static const struct mtd_pairing_scheme micron_l84a_pairing_scheme = {
++	.ngroups = 2,
++	.get_info = micron_l84a_get_info,
++	.get_wunit = micron_l84a_get_wunit,
++};
++
++static void micron_nand_set_pairing(struct nand_chip *chip)
++{
++	struct mtd_info *mtd = nand_to_mtd(chip);
++	const u8 *id = chip->id.data;
++
++	/* L84A: 8192 + 744 bytes per page, 256 pages per block */
++	if (id[0] == NAND_MFR_MICRON && id[3] == 0x4b && id[4] == 0xa9 &&
++	    mtd->writesize == 8192 && mtd->oobsize == 744 &&
++	    mtd->erasesize == 256 * 8192) {
++		mtd_set_pairing_scheme(mtd, &micron_l84a_pairing_scheme);
++		pr_info("nand: Micron L84A shared-page scheme enabled (SLC emulation possible)\n");
++	}
++}
++
+ static int micron_nand_init(struct nand_chip *chip)
+ {
+ 	struct nand_device *base = &chip->base;
+@@ -496,6 +585,8 @@ static int micron_nand_init(struct nand_chip *chip)
+ 
+ 	chip->options |= NAND_BBM_FIRSTPAGE;
+ 
++	micron_nand_set_pairing(chip);
++
+ 	if (mtd->writesize == 2048)
+ 		chip->options |= NAND_BBM_SECONDPAGE;
+ 
+-- 
+2.43.0
+

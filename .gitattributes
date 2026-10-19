@@ -1,0 +1,7 @@
+# Text med LF överallt (dash kör Linux), binärfiler orörda
+* text=auto eol=lf
+*.png binary
+*.ttf binary
+*.tgz binary
+# Spelen är egna filer (hämtas med Uppdatera spel) och ska inte med i det Uppdatera installerar
+games export-ignore

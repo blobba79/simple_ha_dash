@@ -1,0 +1,66 @@
+From c416400c73bd8cd3bf78a130c56862270fd42358 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sun, 18 Oct 2026 21:38:18 +0200
+Subject: [PATCH 3/4] ARM: dts: dash-nand: enable the Silead touchscreen like
+ dash's own dtb
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01XTGG1GSUkzofnShZnL4Jjt
+---
+ .../sun8i-a33-q8-tablet-dashnand.dts          | 43 +++++++++++++++++++
+ 1 file changed, 43 insertions(+)
+
+diff --git a/arch/arm/boot/dts/allwinner/sun8i-a33-q8-tablet-dashnand.dts b/arch/arm/boot/dts/allwinner/sun8i-a33-q8-tablet-dashnand.dts
+index 6c5d5d5df..090e51664 100644
+--- a/arch/arm/boot/dts/allwinner/sun8i-a33-q8-tablet-dashnand.dts
++++ b/arch/arm/boot/dts/allwinner/sun8i-a33-q8-tablet-dashnand.dts
+@@ -69,3 +69,46 @@ panel-timing {
+ 		vsync-active = <1>;
+ 	};
+ };
++
++/* Pekskärmen som i dashs egen dtb (Silead GSL1680-kompatibel, firmware gsl2681-b482-q8.fw) */
++&i2c0 {
++	clock-frequency = <100000>;
++};
++
++&reg_ldo_io0 {
++	regulator-min-microvolt = <3300000>;
++	regulator-max-microvolt = <3300000>;
++	status = "okay";
++};
++
++&reg_ldo_io1 {
++	regulator-name = "vcc-touchscreen";
++	regulator-min-microvolt = <3300000>;
++	regulator-max-microvolt = <3300000>;
++	status = "okay";
++};
++
++&touchscreen {
++	compatible = "silead,gsl1680";
++	firmware-name = "gsl2681-b482-q8.fw";
++	touchscreen-size-x = <1272>;
++	touchscreen-size-y = <768>;
++	touchscreen-inverted-x;
++	touchscreen-inverted-y;
++	avdd-supply = <&reg_ldo_io0>;
++	vddio-supply = <&reg_ldo_io1>;
++	status = "okay";
++};
++
++&pio {
++	interrupts = <GIC_SPI 11 IRQ_TYPE_LEVEL_HIGH>,
++		     <GIC_SPI 15 IRQ_TYPE_LEVEL_HIGH>,
++		     <GIC_SPI 17 IRQ_TYPE_LEVEL_HIGH>;
++
++	touch-wake-hog {
++		gpio-hog;
++		gpios = <7 9 GPIO_ACTIVE_HIGH>;
++		line-name = "touch-wake";
++		output-high;
++	};
++};
+-- 
+2.43.0
+

@@ -1,0 +1,27 @@
+/dts-v1/;
+/plugin/;
+/ {
+  fragment@0 {
+    target-path = "/soc/nand-controller@1c03000";
+    __overlay__ {
+      status = "okay";
+      #address-cells = <1>;
+      #size-cells = <0>;
+      nand@0 {
+        reg = <0>;
+        allwinner,rb = <0>;
+        nand-ecc-strength = <40>;
+        nand-ecc-step-size = <1024>;
+        partitions {
+          compatible = "fixed-partitions";
+          #address-cells = <2>;
+          #size-cells = <2>;
+          partition@0       { label = "boot";     reg = <0x0 0x0       0x0 0x1000000>; };
+          partition@1000000 { label = "kernel-a"; reg = <0x0 0x1000000 0x0 0x2000000>; };
+          partition@3000000 { label = "kernel-b"; reg = <0x0 0x3000000 0x0 0x2000000>; };
+          partition@5000000 { label = "ubi";      reg = <0x0 0x5000000 0x1 0xfb000000>; slc-mode; };
+        };
+      };
+    };
+  };
+};

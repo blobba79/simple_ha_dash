@@ -1,0 +1,842 @@
+#!/usr/bin/python3
+# -*- coding: utf-8 -*-
+"""dash-firstboot - första start och inställningar från kortets DASHCFG-partition.
+
+  dash-firstboot early    före nätverk och ssh: växer rotpartitionen, namn, ssh-nycklar, lösenord, panelens inställningar
+  dash-firstboot net      efter att nätverket startat: tillämpar nya Wi-Fi-inställningar (netplan apply)
+  dash-firstboot info     väntar på nätadress och skriver dash-info.txt på kortet
+  dash-firstboot status   visar vad som är gjort (inga hemligheter)
+
+Inställningarna står i dash-config.txt på partitionen DASHCFG (FAT16, syns i Windows/macOS/Linux). Filen läses vid
+varje start. Ett tomt värde betyder "rör inte". Ett värde tillämpas bara när det är nytt eller ändrat sedan sist,
+så att till exempel ett lösenord du bytt med passwd inte skrivs över vid varje uppstart.
+
+Miljövariabler för prov (aldrig satta i drift):
+  DASH_ROOT=/katalog     alla sökvägar får detta prefix
+  DASH_NOEXEC=1          kommandon skrivs till $DASH_ROOT/noexec.log i stället för att köras
+  DASH_CFG_DIR=/katalog  läs och skriv konfigurationen här i stället för att montera DASHCFG
+"""
+import hashlib
+import json
+import os
+import re
+import secrets
+import subprocess
+import sys
+import time
+import traceback
+
+ROOT = os.environ.get('DASH_ROOT', '').rstrip('/')
+NOEXEC = os.environ.get('DASH_NOEXEC') == '1'
+CFG_DIR = os.environ.get('DASH_CFG_DIR')
+# dash-nand: systemet kör från NAND (ingen DASHCFG). Inställningarna ligger i /etc/dash-cfg och skrivs dit vid installationen.
+if not CFG_DIR and os.path.exists(os.environ.get('DASH_ROOT', '').rstrip('/') + '/etc/dash-nand'):
+    CFG_DIR = os.environ.get('DASH_ROOT', '').rstrip('/') + '/etc/dash-cfg'
+CFG_LABEL = 'DASHCFG'
+CFG_FILE = 'dash-config.txt'
+INFO_FILE = 'dash-info.txt'
+CFG_MNT = '/run/dash-cfg'
+RESCUE_ADDR = '192.168.4.1'
+WORDS = 'abcdefghjkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789'      # inga tecken som liknar varandra
+SECRET_KEYS = ('WIFI_PASSWORD', 'WIFI2_PASSWORD', 'WIFI3_PASSWORD', 'WIFI4_PASSWORD', 'HA_TOKEN', 'ROOT_PASSWORD',
+               'RESCUE_PASSWORD')
+
+
+def P(path):
+    return ROOT + path
+
+
+STATE_DIR = P('/var/lib/dash-firstboot')
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# Hjälpfunktioner
+# ---------------------------------------------------------------------------------------------------------------
+def log(msg):
+    print('dash-firstboot: ' + msg, flush=True)
+    try:
+        os.makedirs(STATE_DIR, exist_ok=True)
+        path = STATE_DIR + '/log'
+        with open(path, 'a', encoding='utf-8') as f:
+            f.write('%s %s\n' % (time.strftime('%Y-%m-%d %H:%M:%S'), msg))
+        if os.path.getsize(path) > 100000:
+            with open(path, 'rb') as f:
+                f.seek(-50000, 2)
+                tail = f.read().split(b'\n', 1)[-1]
+            with open(path, 'wb') as f:
+                f.write(tail)
+    except OSError:
+        pass
+
+
+def run(cmd, input=None, timeout=120):
+    """Kör ett kommando. Loggar bara kommandots namn (lösenord går via stdin och loggas aldrig)."""
+    if NOEXEC:
+        with open(P('/noexec.log'), 'a', encoding='utf-8') as f:
+            f.write('%s%s\n' % (' '.join(cmd), '  <<< ' + input.strip() if input else ''))
+        return subprocess.CompletedProcess(cmd, 0, '', '')
+    try:
+        return subprocess.run(cmd, input=input, capture_output=True, text=True, timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return subprocess.CompletedProcess(cmd, 127, '', str(e))
+
+
+def read_text(path, default=None):
+    try:
+        with open(path, encoding='utf-8', errors='replace') as f:
+            return f.read()
+    except OSError:
+        return default
+
+
+def write_if_changed(path, data, mode=0o644):
+    """Skriver filen atomiskt. Ger True om innehållet ändrades."""
+    if isinstance(data, str):
+        data = data.encode('utf-8')
+    try:
+        with open(path, 'rb') as f:
+            if f.read() == data:
+                os.chmod(path, mode)
+                return False
+    except OSError:
+        pass
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + '.tmp'
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
+    with os.fdopen(fd, 'wb') as f:
+        f.write(data)
+        f.flush()
+        os.fsync(f.fileno())
+    os.chmod(tmp, mode)
+    os.replace(tmp, path)
+    return True
+
+
+def digest(value):
+    return hashlib.sha256(value.encode('utf-8')).hexdigest()
+
+
+def rand_password(n):
+    return ''.join(secrets.choice(WORDS) for _ in range(n))
+
+
+class State:
+    def __init__(self):
+        self.path = STATE_DIR + '/state.json'
+        try:
+            with open(self.path, encoding='utf-8') as f:
+                self.d = json.load(f)
+        except (OSError, ValueError):
+            self.d = {}
+        for k in ('applied', 'generated'):
+            self.d.setdefault(k, {})
+
+    def changed(self, key, value):
+        return self.d['applied'].get(key) != digest(value)
+
+    def mark(self, key, value):
+        self.d['applied'][key] = digest(value)
+
+    def save(self):
+        write_if_changed(self.path, json.dumps(self.d, indent=1, sort_keys=True) + '\n', 0o600)
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# Konfigurationen på DASHCFG
+# ---------------------------------------------------------------------------------------------------------------
+def parse_config(text):
+    """Ger (dict med sista värdet per nyckel, lista med alla (nyckel, värde) i ordning)."""
+    cfg, pairs = {}, []
+    for raw in text.lstrip('\ufeff').splitlines():
+        line = raw.strip()
+        if not line or line[0] in '#;':
+            continue
+        if '=' not in line:
+            log('hoppar över rad utan = i %s' % CFG_FILE)
+            continue
+        k, v = line.split('=', 1)
+        k, v = k.strip().upper(), v.strip()
+        if len(v) >= 2 and v[0] == v[-1] and v[0] in '"\'':
+            v = v[1:-1]
+        cfg[k] = v
+        pairs.append((k, v))
+    return cfg, pairs
+
+
+class CfgStore:
+    """Läser och skriver filer på DASHCFG. Monteras skrivskyddat och görs skrivbart bara en kort stund."""
+
+    def __init__(self):
+        self.dir, self.dev, self.mounted = None, None, False
+
+    def open(self):
+        if CFG_DIR:
+            self.dir = CFG_DIR
+            return True
+        r = run(['blkid', '-L', CFG_LABEL])
+        dev = r.stdout.strip()
+        if r.returncode != 0 or not dev:
+            log('ingen partition med namnet %s hittades (inställningar kan inte läsas från kortet)' % CFG_LABEL)
+            return False
+        self.dev = dev
+        run(['fsck.vfat', '-a', dev], timeout=90)            # lagar en FAT som lämnats smutsig av ett strömavbrott
+        os.makedirs(P(CFG_MNT), exist_ok=True)
+        r = run(['mount', '-t', 'vfat', '-o', 'ro,nosuid,nodev,noexec,flush', dev, P(CFG_MNT)])
+        if r.returncode != 0:
+            log('kunde inte montera %s: %s' % (dev, r.stderr.strip()[:200]))
+            return False
+        self.dir, self.mounted = P(CFG_MNT), True
+        return True
+
+    def _find(self, name):
+        try:
+            for n in os.listdir(self.dir):
+                if n.lower() == name.lower():
+                    return os.path.join(self.dir, n)
+        except OSError:
+            pass
+        return None
+
+    def read(self, name):
+        if not self.dir:
+            return None
+        p = self._find(name)
+        if not p:
+            return None
+        with open(p, 'rb') as f:
+            return f.read()
+
+    def write(self, name, data):
+        if not self.dir:
+            return False
+        if self.mounted:
+            if run(['mount', '-o', 'remount,rw', self.dir]).returncode != 0:
+                log('kunde inte göra DASHCFG skrivbar')
+                return False
+        try:
+            path = self._find(name) or os.path.join(self.dir, name)
+            tmp = os.path.join(self.dir, '.dash-tmp')
+            with open(tmp, 'wb') as f:
+                f.write(data if isinstance(data, bytes) else data.encode('utf-8'))
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, path)
+            run(['sync'])
+            return True
+        except OSError as e:
+            log('kunde inte skriva %s på kortet: %s' % (name, e))
+            return False
+        finally:
+            if self.mounted:
+                run(['mount', '-o', 'remount,ro', self.dir])
+
+    def close(self):
+        if self.mounted:
+            if run(['umount', self.dir]).returncode != 0:
+                run(['umount', '-l', self.dir])
+            self.mounted = False
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# Rotpartitionen: växer till kortets storlek (som Armbians egen tjänst, men tål att DASHCFG ligger före på kortet)
+# ---------------------------------------------------------------------------------------------------------------
+def target_end(cap):
+    """Sista sektor för rotpartitionen. Samma regler som Armbian: 5/2/1 % lämnas oanvänt, slut på 16 MiB-gräns."""
+    size = cap * 512
+    pct = 95 if size < 4 << 30 else 98 if size < 8 << 30 else 99
+    last = cap * pct // 100
+    return last - (last % 32768) - 1
+
+
+def grow_root(st):
+    src = os.environ.get('DASH_ROOT_DEV')
+    if not src:
+        r = run(['findmnt', '-n', '-o', 'SOURCE', '/'])
+        src = re.sub(r'\[.*\]', '', r.stdout.strip())
+    m = re.match(r'^/dev/((?:mmcblk\d+|nvme\d+n\d+|loop\d+))p(\d+)$|^/dev/((?:sd|vd)[a-z]+)(\d+)$', src or '')
+    if not m:
+        log('okänd rotenhet %r, växer inte partitionen' % src)
+        return
+    disk = '/dev/' + (m.group(1) or m.group(3))
+    part = int(m.group(2) or m.group(4))
+    sysp = P('/sys/class/block/') + os.path.basename(src)
+    sysd = P('/sys/class/block/') + os.path.basename(disk)
+    try:
+        start = int(read_text(sysp + '/start'))
+        size = int(read_text(sysp + '/size'))
+        cap = int(read_text(sysd + '/size'))
+    except (TypeError, ValueError):
+        log('kunde inte läsa partitionens storlek ur sysfs')
+        return
+    want_end = target_end(cap)
+    if want_end > start + size - 1 + 2048:
+        for name in os.listdir(sysd):                    # ligger något annat i vägen?
+            if name.startswith(os.path.basename(disk)) and name != os.path.basename(src):
+                s2 = int(read_text('%s/%s/start' % (sysd, name), '0'))
+                if start < s2 <= want_end:
+                    log('en annan partition (%s) ligger före kortets slut, växer inte' % name)
+                    return
+        new_size = want_end - start + 1
+        log('växer %s från %d till %d MiB' % (src, size * 512 >> 20, new_size * 512 >> 20))
+        r = run(['sfdisk', '--no-reread', '--no-tell-kernel', '--wipe', 'never', '--wipe-partitions', 'never',
+                 '-N', str(part), disk], input=',%d\n' % new_size)
+        if r.returncode != 0:
+            log('sfdisk misslyckades: %s' % (r.stderr or r.stdout).strip()[:300])
+            return
+        r = run(['partx', '-u', disk])
+        if r.returncode != 0:
+            log('partx: %s' % (r.stderr or r.stdout).strip()[:200])
+        size = int(read_text(sysp + '/size', '0') or 0) if not NOEXEC else new_size
+        if size != new_size:
+            log('kärnan ser fortfarande den gamla storleken; filsystemet växer vid nästa start')
+            return
+    cur = int(read_text(sysp + '/size', '0') or 0)
+    if st.d.get('fs_sectors') != cur:
+        r = run(['resize2fs', src], timeout=900)
+        log('resize2fs: %s' % ((r.stdout + r.stderr).strip().splitlines() or ['(ingen utskrift)'])[-1][:200])
+        if r.returncode == 0:
+            st.d['fs_sectors'] = cur
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# Namn, adress, lösenord, nycklar, tidszon
+# ---------------------------------------------------------------------------------------------------------------
+def read_sid():
+    base = P('/sys/bus/nvmem/devices')
+    try:
+        names = sorted(os.listdir(base))
+    except OSError:
+        return None
+    for n in names:
+        try:
+            # bara små enheter: på NAND-kärnan är varje MTD-partition också en nvmem-enhet (flera GB)
+            with open('%s/%s/nvmem' % (base, n), 'rb') as f:
+                data = f.read(64)
+                if f.read(1):
+                    continue
+        except OSError:
+            continue
+        if len(data) in (16, 32) and any(data) and data != b'\xff' * len(data):
+            return data
+    return None
+
+
+def derive_mac(st):
+    """En egen, stabil Wi-Fi-adress per enhet. Chippets egen adress är densamma på alla enheter med samma firmware."""
+    if st.d.get('mac'):
+        return st.d['mac']
+    sid = read_sid()
+    h = hashlib.sha256(b'dash-wlan0-mac-v1' + (sid or os.urandom(16))).digest()
+    b = bytearray(h[:6])
+    b[0] = (b[0] & 0xFC) | 0x02                      # unicast, lokalt administrerad
+    st.d['mac'] = ':'.join('%02x' % x for x in b)
+    st.d['mac_from'] = 'chip-id' if sid else 'slump'
+    return st.d['mac']
+
+
+def sanitize_hostname(s):
+    s = (s or '').strip().lower().translate(str.maketrans('åäöé', 'aaoe'))
+    return re.sub(r'[^a-z0-9-]+', '-', s).strip('-')[:63]
+
+
+def set_hostname(name):
+    old = (read_text(P('/etc/hostname'), '') or '').strip()
+    write_if_changed(P('/etc/hostname'), name + '\n')
+    hosts = read_text(P('/etc/hosts'), '') or ''
+    if old and old != name:
+        hosts = re.sub(r'(?<![\w.-])%s(?![\w.-])' % re.escape(old), name, hosts)
+    if not re.search(r'^127\.0\.1\.1\s', hosts, re.M):
+        hosts = hosts.rstrip('\n') + '\n127.0.1.1   %s\n' % name
+    elif name not in hosts:
+        hosts = re.sub(r'^(127\.0\.1\.1\s+).*$', r'\g<1>' + name, hosts, flags=re.M)
+    write_if_changed(P('/etc/hosts'), hosts)
+    run(['hostname', name])
+    log('namn: %s' % name)
+
+
+def handle_identity(st, cfg, first):
+    mac = derive_mac(st)
+    want = sanitize_hostname(cfg.get('HOSTNAME', ''))
+    if cfg.get('HOSTNAME') and not want:
+        log('HOSTNAME innehåller inga giltiga tecken, ignoreras')
+    if want:
+        if st.changed('HOSTNAME', want):
+            set_hostname(want)
+            st.mark('HOSTNAME', want)
+    elif first or not st.d.get('hostname_done'):
+        set_hostname('dash-' + mac[-5:].replace(':', ''))
+        st.d['hostname_done'] = True
+    # Wi-Fi-adress: .link-filen gäller varje start (udev sätter adressen när gränssnittet skapas)
+    mode = cfg.get('WIFI_MAC', 'auto').strip().lower() or 'auto'
+    link = P('/etc/systemd/network/10-dash-wlan0.link')
+    if mode == 'keep':
+        if os.path.exists(link) and st.d.get('link_by_us'):
+            os.remove(link)
+            st.d['link_by_us'] = False
+        return
+    if re.match(r'^([0-9a-f]{2}:){5}[0-9a-f]{2}$', mode):
+        mac = mode
+    elif mode != 'auto':
+        log('WIFI_MAC=%s förstås inte, använder auto' % mode)
+    body = ('# Skapad av dash-firstboot. Ger wlan0 en egen adress i stället för chippets gemensamma.\n'
+            '[Match]\nOriginalName=wlan0\n\n[Link]\nMACAddress=%s\n' % mac)
+    write_if_changed(link, body)
+    st.d['link_by_us'] = True
+    # finns gränssnittet redan och är nere sätts adressen direkt (annars tar udev över vid nästa start)
+    cur = (read_text(P('/sys/class/net/wlan0/address'), '') or '').strip()
+    flags = (read_text(P('/sys/class/net/wlan0/flags'), '0x0') or '0x0').strip()
+    if cur and cur != mac and not int(flags, 16) & 1:
+        run(['ip', 'link', 'set', 'dev', 'wlan0', 'address', mac])
+        log('Wi-Fi-adress %s' % mac)
+
+
+def handle_host_keys():
+    keys = [P('/etc/ssh/ssh_host_%s_key' % t) for t in ('rsa', 'ecdsa', 'ed25519')]
+    if not all(os.path.exists(k) for k in keys):
+        log('skapar ssh-värdnycklar')
+        run(['ssh-keygen', '-A'], timeout=300)
+
+
+def handle_update_key():
+    """Egen deploy key för dash-update (hämtar panelens uppdateringar från GitHub). Skapas en gång per enhet och
+    finns aldrig i avbilden. Publika delen visas i dash-info.txt så att den kan läggas in som Deploy key i repot."""
+    key = P('/etc/dash-update/deploy_key')
+    if not os.path.isdir(os.path.dirname(key)) or os.path.exists(key):          # ingen uppdaterare, eller redan skapad
+        return
+    name = (read_text(P('/etc/hostname'), '') or '').strip() or 'dash'
+    log('skapar deploy key för dash-update')
+    run(['ssh-keygen', '-q', '-t', 'ed25519', '-N', '', '-C', 'dash-update@%s' % name, '-f', key], timeout=60)
+    if os.path.exists(key):
+        os.chmod(key, 0o600)
+
+
+def handle_root_password(st, cfg):
+    pw = cfg.get('ROOT_PASSWORD', '')
+    if pw:
+        if '\n' in pw or '\x00' in pw:
+            log('ROOT_PASSWORD innehåller ogiltiga tecken, ignoreras')
+        elif st.changed('ROOT_PASSWORD', pw):
+            run(['chpasswd'], input='root:%s\n' % pw)
+            st.mark('ROOT_PASSWORD', pw)
+            st.d['root_pw_done'] = True
+            st.d['generated'].pop('root_password', None)
+            log('root-lösenordet satt från %s' % CFG_FILE)
+    elif not st.d.get('root_pw_done'):
+        pw = rand_password(14)
+        run(['chpasswd'], input='root:%s\n' % pw)
+        st.d['generated']['root_password'] = pw
+        st.d['root_pw_done'] = True
+        log('root-lösenord slumpades (står i %s på kortet)' % INFO_FILE)
+
+
+KEY_RE = re.compile(r'^(ssh-(rsa|ed25519|dss)|ecdsa-sha2-nistp\d+|sk-(ssh-ed25519|ecdsa-sha2-nistp256)@openssh\.com)'
+                    r'\s+[A-Za-z0-9+/=]+(\s.*)?$')
+
+
+def handle_ssh_keys(st, pairs):
+    keys = [v for k, v in pairs if re.match(r'^SSH_PUBLIC_KEY\d*$', k) and v]
+    good = []
+    for k in keys:
+        if KEY_RE.match(k):
+            good.append(k)
+        else:
+            log('en SSH_PUBLIC_KEY ser inte ut som en publik nyckel och hoppas över')
+    if not good or not st.changed('SSH_PUBLIC_KEY', '\n'.join(good)):
+        return
+    path = P('/root/.ssh/authorized_keys')
+    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+    os.chmod(os.path.dirname(path), 0o700)
+    have = read_text(path, '') or ''
+    have_blobs = {ln.split()[1] for ln in have.splitlines() if len(ln.split()) >= 2}
+    add = [k for k in good if k.split()[1] not in have_blobs]
+    if add:
+        write_if_changed(path, have + ('' if have.endswith('\n') or not have else '\n') + '\n'.join(add) + '\n', 0o600)
+        log('lade till %d ssh-nyckel/nycklar' % len(add))
+    st.mark('SSH_PUBLIC_KEY', '\n'.join(good))
+
+
+def handle_timezone(st, cfg, first):
+    tz = cfg.get('TIMEZONE', '').strip()
+    if not tz or not (first or st.changed('TIMEZONE', tz)):
+        return
+    if not re.match(r'^[A-Za-z0-9_+\-/]+$', tz) or '..' in tz or not os.path.isfile(P('/usr/share/zoneinfo/' + tz)):
+        log('okänd tidszon %r, ignoreras' % tz)
+        return
+    lt = P('/etc/localtime')
+    try:
+        os.remove(lt)
+    except OSError:
+        pass
+    os.symlink('/usr/share/zoneinfo/' + tz, lt)
+    write_if_changed(P('/etc/timezone'), tz + '\n')
+    st.mark('TIMEZONE', tz)
+    log('tidszon %s' % tz)
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# Panelen (Home Assistant)
+# ---------------------------------------------------------------------------------------------------------------
+def build_ha_url(cfg):
+    url = cfg.get('HA_URL', '').strip()
+    if url:
+        if re.match(r'^wss?://', url, re.I) and not url.lower().startswith('ws://'):
+            log('HA_URL måste börja med ws:// (panelen stöder inte krypterad WebSocket), ignoreras')
+            return None
+        url = re.sub(r'^https?://', 'ws://', url, flags=re.I)
+        if not re.match(r'^ws://[^/\s]+(/.*)?$', url):
+            log('HA_URL ser inte rätt ut, ignoreras')
+            return None
+        return url if re.match(r'^ws://[^/]+/.+', url) else url.rstrip('/') + '/api/websocket'
+    host = cfg.get('HA_HOST', '').strip()
+    if not host:
+        return None
+    host = re.sub(r'^[A-Za-z]+://', '', host).split('/')[0]
+    port = cfg.get('HA_PORT', '').strip() or '8123'
+    if host.count(':') == 1:
+        host, _, p2 = host.partition(':')
+        port = p2 or port
+    if not re.match(r'^[A-Za-z0-9.-]+$', host) or not port.isdigit() or not 0 < int(port) < 65536:
+        log('HA_HOST/HA_PORT ser inte rätt ut, ignoreras')
+        return None
+    return 'ws://%s:%s/api/websocket' % (host, port)
+
+
+def ha_host_of(url):
+    return url.split('//', 1)[-1].split('/', 1)[0].rsplit(':', 1)[0] if url else ''
+
+
+def handle_panel(st, cfg, first):
+    path = P('/etc/dash-panel/config.json')
+    url = build_ha_url(cfg)
+    tz = cfg.get('TIMEZONE', '').strip()
+    dirty = False
+    try:
+        with open(path, encoding='utf-8') as f:
+            j = json.load(f)
+        if not isinstance(j, dict):
+            raise ValueError('inte ett objekt')
+    except FileNotFoundError:
+        j = {'version': 1}
+    except (OSError, ValueError) as e:
+        log('panelens config.json är trasig (%s), rör den inte' % e)
+        j = None
+    if j is not None:
+        if url and st.changed('HA_URL', url):
+            j.setdefault('ha', {})['url'] = url
+            j['ha'].setdefault('token_file', '/etc/dash-panel/token')
+            st.mark('HA_URL', url)
+            dirty = True
+        if tz and re.match(r'^[A-Za-z0-9_+\-/]+$', tz) and st.changed('PANEL_TZ', tz):
+            j.setdefault('locale', {})['timezone'] = tz
+            j['locale'].setdefault('decimal_separator', ',')
+            st.mark('PANEL_TZ', tz)
+            dirty = True
+        if dirty:
+            write_if_changed(path, json.dumps(j, ensure_ascii=False, indent=1) + '\n')
+            log('panelens inställningar uppdaterade (Home Assistant: %s)' % (ha_host_of(url) or 'oförändrad'))
+    tok = cfg.get('HA_TOKEN', '').strip()
+    if tok:
+        if re.search(r'\s', tok):
+            log('HA_TOKEN innehåller mellanslag eller radbrytning, ignoreras')
+        elif st.changed('HA_TOKEN', tok):
+            write_if_changed(P('/etc/dash-panel/token'), tok + '\n', 0o600)
+            st.mark('HA_TOKEN', tok)
+            log('Home Assistant-token sparad')
+    # nätloggen pingar Home Assistant; adressen ska vara kundens, inte någon annans
+    if url and st.changed('NETLOG_HA', ha_host_of(url)):
+        d = P('/etc/systemd/system/dash-netlog.service.d')
+        body = '# Skapad av dash-firstboot.\n[Service]\nEnvironment="NETLOG_TARGETS=ha=%s"\n' % ha_host_of(url)
+        if write_if_changed(d + '/targets.conf', body):
+            st.d['units_dirty'] = True
+        st.mark('NETLOG_HA', ha_host_of(url))
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# Wi-Fi (netplan) och reservnätets lösenord
+# ---------------------------------------------------------------------------------------------------------------
+def jq(s):
+    return json.dumps(s, ensure_ascii=False)
+
+
+def build_netplan(cfg):
+    aps, warns = [], []
+    for sfx in ('', '2', '3', '4'):
+        ssid = cfg.get('WIFI%s_SSID' % sfx, '')
+        if not ssid:
+            continue
+        pw = cfg.get('WIFI%s_PASSWORD' % sfx, '')
+        hidden = cfg.get('WIFI%s_HIDDEN' % sfx, '').strip().lower() in ('ja', 'yes', 'true', '1')
+        if len(ssid.encode('utf-8')) > 32:
+            warns.append('WIFI%s_SSID är längre än 32 byte, hoppas över' % sfx)
+        elif pw and not (8 <= len(pw) <= 63 or re.match(r'^[0-9A-Fa-f]{64}$', pw)):
+            warns.append('WIFI%s_PASSWORD måste vara 8-63 tecken, nätet hoppas över' % sfx)
+        elif '\n' in pw or '\n' in ssid:
+            warns.append('WIFI%s innehåller radbrytning, hoppas över' % sfx)
+        else:
+            aps.append((ssid, pw, hidden))
+    if not aps:
+        return None, warns
+    out = ['# Skapad av dash-firstboot ur dash-config.txt. Ändra där, inte här (filen skrivs om när den ändras).',
+           'network:', '  version: 2', '  renderer: networkd', '  wifis:', '    wlan0:', '      dhcp4: true',
+           '      dhcp6: true']
+    country = cfg.get('WIFI_COUNTRY', '').strip().upper()
+    if re.match(r'^[A-Z]{2}$', country):
+        out.append('      regulatory-domain: %s' % jq(country))
+    elif country:
+        warns.append('WIFI_COUNTRY ska vara två bokstäver, ignoreras')
+    out.append('      access-points:')
+    for ssid, pw, hidden in aps:
+        if not pw and not hidden:
+            out.append('        %s: {}' % jq(ssid))
+            continue
+        out.append('        %s:' % jq(ssid))
+        if pw:
+            out.append('          password: %s' % jq(pw))
+        if hidden:
+            out.append('          hidden: true')
+    return '\n'.join(out) + '\n', warns
+
+
+def handle_wifi(st, cfg):
+    text, warns = build_netplan(cfg)
+    for w in warns:
+        log(w)
+    if not text:
+        return
+    try:
+        import yaml
+        yaml.safe_load(text)
+    except ImportError:
+        pass
+    except Exception as e:                                   # en trasig netplan-fil skulle slå ut allt nät
+        log('den genererade Wi-Fi-filen blev ogiltig (%s), används inte' % type(e).__name__)
+        return
+    if write_if_changed(P('/etc/netplan/60-dash-wifi.yaml'), text, 0o600):
+        st.d['net_dirty'] = True
+        log('Wi-Fi inställt (nät: %s)' % ', '.join(cfg[k] for k in ('WIFI_SSID', 'WIFI2_SSID', 'WIFI3_SSID', 'WIFI4_SSID')
+                                                   if cfg.get(k)))
+
+
+def shell_quote(s):
+    return "'" + s.replace("'", "'\\''") + "'"
+
+
+def handle_rescue(st, cfg):
+    path = P('/etc/wifi-rescue.conf')
+    text = read_text(path, '') or ''
+    m = re.search(r"^PSK=(.*)$", text, re.M)
+    have = m is not None and len(m.group(1).strip("'\"")) >= 8
+    pw = cfg.get('RESCUE_PASSWORD', '')
+    new = None
+    if pw:
+        if not 8 <= len(pw) <= 63 or '\n' in pw:
+            log('RESCUE_PASSWORD måste vara 8-63 tecken, ignoreras')
+        elif st.changed('RESCUE_PASSWORD', pw):
+            new = pw
+            st.mark('RESCUE_PASSWORD', pw)
+            st.d['generated'].pop('rescue_password', None)
+    elif not have:
+        new = rand_password(12)
+        st.d['generated']['rescue_password'] = new
+    if new is None:
+        return
+    line = 'PSK=%s' % shell_quote(new)
+    if m:
+        text = re.sub(r'^PSK=.*$', lambda _: line, text, count=1, flags=re.M)
+    else:
+        if not text:
+            text = ('# Inställningar för reservnätet (wifi-rescue). Skapad av dash-firstboot. Endast root kan läsa filen.\n'
+                    '# Nätnamnet blir automatiskt "dash-" + sista 4 tecknen i Wi-Fi-adressen.\n'
+                    '# Lösenordet kräver minst 8 tecken (WPA2).\n')
+        text = text.rstrip('\n') + '\n' + line + '\n'
+    write_if_changed(path, text, 0o600)
+    log('reservnätets lösenord satt')
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# dash-info.txt: sammanfattning som syns när kortet sätts i en dator
+# ---------------------------------------------------------------------------------------------------------------
+def current_ip():
+    r = run(['ip', '-4', '-o', 'addr', 'show', 'scope', 'global'])
+    for ln in r.stdout.splitlines():
+        m = re.search(r'^\d+:\s+(\S+)\s+inet\s+(\d+\.\d+\.\d+\.\d+)/', ln)
+        if m and m.group(2) != RESCUE_ADDR:
+            return m.group(1), m.group(2)
+    return None, None
+
+
+def build_info(st, cfg, ip):
+    name = (read_text(P('/etc/hostname'), '') or '').strip()
+    mac4 = (read_text(P('/sys/class/net/wlan0/address'), st.d.get('mac', '')) or '').strip().replace(':', '')[-4:]
+    g = st.d['generated']
+    L = ['dash - status', '=============', '',
+         'Den här filen skrivs av dash vid start. Ändra inget här; inställningarna står i dash-config.txt.', '']
+    L.append('Namn:                 %s' % (name or '?'))
+    L.append('Wi-Fi-adress (MAC):   %s' % ((read_text(P('/sys/class/net/wlan0/address'), '') or '').strip()
+                                          or st.d.get('mac', '?')))
+    if ip:
+        L.append('Nätadress (IP):       %s   (senast sedd %s)' % (ip, time.strftime('%Y-%m-%d %H:%M')))
+        L.append('Redigera panelen:     http://%s:8099   (från mobil eller dator på samma nät)' % ip)
+        L.append('Logga in med ssh:     ssh root@%s' % ip)
+    else:
+        L.append('Nätadress (IP):       ingen ännu - dash har inte kommit ut på något Wi-Fi')
+    ssids = [cfg[k] for k in ('WIFI_SSID', 'WIFI2_SSID', 'WIFI3_SSID', 'WIFI4_SSID') if cfg.get(k)]
+    L.append('Wi-Fi som angetts:    %s' % (', '.join(ssids) if ssids else '(inget - fyll i WIFI_SSID i dash-config.txt)'))
+    if g.get('root_password'):
+        L.append('Root-lösenord:        %s   (slumpat; gäller tills du byter det)' % g['root_password'])
+    resc = g.get('rescue_password')
+    L.append('')
+    L.append('Reservnät: om dash inte når något Wi-Fi startar det ett eget nät efter ca 90 sekunder.')
+    L.append('  Nätnamn:    dash-%s' % (mac4 or 'xxxx'))
+    if resc:
+        L.append('  Lösenord:   %s' % resc)
+    else:
+        L.append('  Lösenord:   det du angett som RESCUE_PASSWORD')
+    L.append('  Anslut mobilen dit och logga in med: ssh root@%s' % RESCUE_ADDR)
+    L.append('')
+    pub = (read_text(P('/etc/dash-update/deploy_key.pub'), '') or '').strip()
+    if pub:
+        L.append('')
+        L.append('Uppdateringar av panelen (valfritt): dash kan hämta nya versioner av panelen från GitHub.')
+        L.append('  1. Logga in med ssh och kör en gång:  dash-update-setup   (installerar git; dash måste vara på nätet)')
+        L.append('  2. Skicka raden nedan till den som gav dig avbilden, som lägger in den som Deploy key (utan skrivrätt):')
+        L.append('     %s' % pub)
+        L.append('  3. Sedan:  dash-update check   och   dash-update apply   (uppdateringar installeras aldrig av sig själva)')
+    L.append('')
+    L.append('Tips: fungerar inget, sätt kortet i datorn, rätta dash-config.txt och starta om dash.')
+    return '\r\n'.join(L) + '\r\n'
+
+
+def write_info(store, st, cfg, ip):
+    text = build_info(st, cfg, ip)
+    key = re.sub(r'senast sedd [^)]*', '', text)
+    if st.d.get('info_digest') == digest(key):
+        return
+    if store.write(INFO_FILE, text):
+        st.d['info_digest'] = digest(key)
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# Kommandon
+# ---------------------------------------------------------------------------------------------------------------
+def load_cfg(store):
+    data = store.read(CFG_FILE)
+    if data is None:
+        if store.dir:
+            log('%s saknas på DASHCFG' % CFG_FILE)
+        return '', {}, []
+    text = data.decode('utf-8-sig', 'replace')
+    cfg, pairs = parse_config(text)
+    return text, cfg, pairs
+
+
+def guarded(name, fn, *a):
+    try:
+        return fn(*a)
+    except Exception:                                           # ett fel i en del får aldrig stoppa resten
+        log('fel i %s:\n%s' % (name, traceback.format_exc()))
+
+
+def cmd_early():
+    st = State()
+    first = not st.d.get('first_boot_done')
+    log('start (%s)' % ('första starten' if first else 'vanlig start'))
+    guarded('grow_root', grow_root, st)
+    store = CfgStore()
+    try:
+        opened = store.open()
+        text, cfg, pairs = load_cfg(store) if opened else ('', {}, [])
+        guarded('identity', handle_identity, st, cfg, first)
+        guarded('host_keys', handle_host_keys)
+        guarded('update_key', handle_update_key)
+        guarded('root_password', handle_root_password, st, cfg)
+        guarded('ssh_keys', handle_ssh_keys, st, pairs)
+        guarded('timezone', handle_timezone, st, cfg, first)
+        guarded('panel', handle_panel, st, cfg, first)
+        guarded('wifi', handle_wifi, st, cfg)
+        guarded('rescue', handle_rescue, st, cfg)
+        if st.d.pop('units_dirty', False):
+            run(['systemctl', 'daemon-reload'])
+        if opened and cfg.get('WIPE_SECRETS', '').lower() in ('ja', 'yes', 'true', '1'):
+            new, n = text, 0
+            for k in SECRET_KEYS:
+                if cfg.get(k):
+                    new, c = re.subn(r'(?im)^(\s*%s\s*=).*$' % k, lambda m: m.group(1), new)
+                    n += c
+            if n and store.write(CFG_FILE, new.encode('utf-8')):
+                log('tömde %d hemliga värden i %s' % (n, CFG_FILE))
+        st.d['first_boot_done'] = st.d.get('first_boot_done') or time.strftime('%Y-%m-%d %H:%M:%S')
+        st.save()
+        # reservnätets uppgifter ska finnas på kortet direkt, även om nätet aldrig kommer upp
+        if opened:
+            guarded('info', write_info, store, st, cfg, None)
+            st.save()
+    finally:
+        store.close()
+    log('klart')
+
+
+def cmd_net():
+    st = State()
+    if not st.d.get('net_dirty'):
+        return
+    r = run(['netplan', 'generate'])
+    if r.returncode != 0:
+        bad = P('/etc/netplan/60-dash-wifi.yaml')
+        log('netplan godtog inte Wi-Fi-filen (%s); flyttar undan den' % (r.stderr or r.stdout).strip()[:200])
+        if os.path.exists(bad):
+            os.replace(bad, bad + '.rejected')
+        st.d['net_dirty'] = False
+        st.save()
+        run(['netplan', 'generate'])
+        return
+    r = run(['netplan', 'apply'], timeout=180)
+    log('netplan apply: %s' % ('ok' if r.returncode == 0 else (r.stderr or r.stdout).strip()[:200]))
+    st.d['net_dirty'] = False
+    st.save()
+
+
+def cmd_info():
+    st = State()
+    store = CfgStore()
+    try:
+        if not store.open():
+            return
+        text, cfg, _ = load_cfg(store)
+        ip = None
+        for _ in range(60):                                      # högst ca 3 minuter
+            _, ip = current_ip()
+            if ip:
+                break
+            time.sleep(3)
+        write_info(store, st, cfg, ip)
+        st.save()
+    finally:
+        store.close()
+
+
+def cmd_status():
+    st = State()
+    print('första start gjord:  %s' % st.d.get('first_boot_done', 'nej'))
+    print('Wi-Fi-adress:        %s (%s)' % (st.d.get('mac', '-'), st.d.get('mac_from', '-')))
+    print('tillämpade värden:   %s' % (', '.join(sorted(st.d['applied'])) or '-'))
+    print('nät ej tillämpat:    %s' % ('ja' if st.d.get('net_dirty') else 'nej'))
+    print('logg:                %s/log' % STATE_DIR)
+
+
+def main(argv):
+    cmd = argv[1] if len(argv) > 1 else ''
+    fn = {'early': cmd_early, 'net': cmd_net, 'info': cmd_info, 'status': cmd_status}.get(cmd)
+    if not fn:
+        print(__doc__)
+        return 2
+    try:
+        fn()
+    except Exception:
+        log('oväntat fel i %s:\n%s' % (cmd, traceback.format_exc()))
+        return 1
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main(sys.argv))

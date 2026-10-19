@@ -1,0 +1,38 @@
+[Unit]
+Description=simple_ha_dash: pekskärmspanel för Home Assistant
+Documentation=file:///opt/dash-panel/README.md
+After=local-fs.target
+StartLimitIntervalSec=120
+StartLimitBurst=20
+# Inget beroende av nätverket: panelen visar "Ansluter ..." och försöker själv igen med backoff.
+# Rör inte nät, Wi-Fi, wifi-rescue, dash-netlog eller getty@ttyGS0.
+
+[Service]
+Type=notify
+NotifyAccess=main
+WatchdogSec=60
+WorkingDirectory=/opt/dash-panel
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 -m dashpanel
+# Lämna tillbaka konsolen (fbcon) hur tjänsten än slutade: en frusen bild ska aldrig se ut som aktuell data.
+ExecStopPost=/bin/sh -c 'for d in /sys/class/vtconsole/vtcon*; do grep -q "frame buffer" "$d/name" 2>/dev/null && echo 1 > "$d/bind"; done; true'
+# Och tänd skärmen om den var släckt (bakgrundsbelysning 0) när panelen stannade, annars syns inte konsolen.
+ExecStopPost=/bin/sh -c 'for b in /sys/class/backlight/*; do [ "$(cat "$b/brightness" 2>/dev/null)" = 0 ] && cat "$b/max_brightness" > "$b/brightness"; done; true'
+Restart=always
+RestartSec=3
+TimeoutStartSec=30
+# Avslutas snabbt på SIGTERM; annars hänger nedstängningen (reboot). Efter 5 s tas den med SIGKILL.
+TimeoutStopSec=5
+# Här sparas senaste ljusstyrka per lampa (state.json) och skärminställningarna (settings.json): /var/lib/dash-panel/
+StateDirectory=dash-panel
+# Om minnet tar slut ska panelen offras, inte sshd.
+MemoryHigh=110M
+MemoryMax=150M
+Nice=5
+OOMScoreAdjust=300
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,621 @@
+#!/usr/bin/python3
+# -*- coding: utf-8 -*-
+"""dash-nand-install - installerar dash (r5) i plattans inbyggda NAND från installationskortet.
+
+Körs tidigt vid start från installationskortet (dash-nand-install.service), före dash-firstboot.
+Gör något bara om nand-install.txt (eller dash-config.txt) på kortets DASHCFG har NAND_INSTALL=yes (eller force).
+
+Manuellt (t.ex. över ssh på en platta som kör kortet som vanligt):
+  DASH_NAND_INSTALL=yes DASH_NAND_PAY=/sökväg/till/dash-nand dash-nand-install
+(NAND-drivrutinen får inte vara laddad sedan tidigare; starta om först om den har använts.)
+
+Steg: läser kortets dash-config.txt -> räknar ut plattans namn (som dash-firstboot) -> stoppar panelen ->
+laddar NAND-drivrutinen med Micron-L84A-schemat + partitioner -> raderar och skriver:
+  boot      SPL (rå, två kopior) + U-Boot (två kopior)
+  kernel-a  kärna + enhetsträd     kernel-b  samma (reserv)
+  ubi       rotfilsystemet (ubiformat -f), SLC-läge
+-> lägger in inställningarna i /etc/dash-cfg/dash-config.txt (slumpar root- och reservnätslösenord om de saknas)
+-> kontrollerar allt genom att läsa tillbaka -> skriver en rad i nand-installerade.txt på kortet -> stänger av.
+
+Allt som händer skrivs på skärmen (tty1) och i /var/log/dash-nand-install.log på kortet.
+"""
+import ctypes
+import fcntl
+import hashlib
+import os
+import re
+import secrets
+import struct
+import subprocess
+import sys
+import time
+
+PAY = os.environ.get('DASH_NAND_PAY', '/opt/dash-nand')   # manuellt: DASH_NAND_PAY=/var/tmp/.../dash-nand
+LOG = '/var/log/dash-nand-install.log'
+CFG_LABEL = 'DASHCFG'
+CFG_FILE = 'dash-config.txt'
+REPORT = 'nand-installerade.txt'
+FLAG_FILE = 'nand-install.txt'              # NAND_INSTALL=yes här (eller i dash-config.txt)
+CFG_MNT = '/run/dash-nand-cfg'
+ROOT_MNT = '/run/dash-nand-root'
+OVERLAY = '/sys/kernel/config/device-tree/overlays/dash-nand'
+WORDS = 'abcdefghjkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789'   # samma som dash-firstboot
+
+MEMGETINFO = 0x80204d01
+MEMERASE64 = 0x40104d14
+MEMWRITE = 0xC0304D18
+MEMREAD = 0xC0404D1A
+MEMSETBADBLOCK = 0x40084d0c
+MEMGETBADBLOCK = 0x40084d0b
+MAX_FACTORY_BAD = 80                # Micron L84A: minst 4016 av 4096 block är bra
+MTD_OPS_RAW = 2
+
+PAGE, OOB, BLOCK = 8192, 744, 0x200000
+SPL_OFFS = (0x0, 0x400000)
+UBOOT_OFFS = (0x800000, 0xc00000)
+DTB_OFF = 0x1e00000                 # inom kernel-a / kernel-b (U-Boot läser 0x2e00000 och 0x4e00000)
+
+_tty = None
+
+
+# ------------------------------------------------------------------------------------------------------------
+def log(msg):
+    line = '%s %s' % (time.strftime('%H:%M:%S'), msg)
+    print('dash-nand-install: ' + msg, flush=True)
+    try:
+        with open(LOG, 'a', encoding='utf-8') as f:
+            f.write(line + '\n')
+    except OSError:
+        pass
+
+
+def say(msg=''):
+    """Visas på skärmen och i loggen."""
+    if msg:
+        log(msg)
+    global _tty
+    try:
+        if _tty is None:
+            _tty = open('/dev/tty1', 'w', encoding='utf-8', errors='replace')
+        _tty.write(msg + '\n')
+        _tty.flush()
+    except OSError:
+        pass
+
+
+def run(cmd, input=None, timeout=600, check=False):
+    r = subprocess.run(cmd, input=input, capture_output=True, text=True, timeout=timeout)
+    if check and r.returncode != 0:
+        raise RuntimeError('%s: %s' % (' '.join(cmd), (r.stderr or r.stdout).strip()[:300]))
+    return r
+
+
+class Fel(Exception):
+    pass
+
+
+# ------------------------------------------------------------------------------------------------------------
+# Kortets inställningar (DASHCFG)
+# ------------------------------------------------------------------------------------------------------------
+def cfg_mount(rw=False):
+    r = run(['blkid', '-L', CFG_LABEL])
+    dev = r.stdout.strip()
+    if r.returncode != 0 or not dev:
+        return None
+    os.makedirs(CFG_MNT, exist_ok=True)
+    if os.path.ismount(CFG_MNT):
+        run(['mount', '-o', 'remount,%s' % ('rw' if rw else 'ro'), CFG_MNT])
+        return CFG_MNT
+    run(['fsck.vfat', '-a', dev], timeout=90)
+    r = run(['mount', '-t', 'vfat', '-o', '%s,nosuid,nodev,noexec,flush' % ('rw' if rw else 'ro'), dev, CFG_MNT])
+    return CFG_MNT if r.returncode == 0 else None
+
+
+def cfg_find(name):
+    try:
+        for n in os.listdir(CFG_MNT):
+            if n.lower() == name.lower():
+                return os.path.join(CFG_MNT, n)
+    except OSError:
+        pass
+    return None
+
+
+def parse_cfg(text):
+    cfg = {}
+    for line in text.splitlines():
+        s = line.strip()
+        if not s or s.startswith('#') or '=' not in s:
+            continue
+        k, v = s.split('=', 1)
+        v = v.strip()
+        if len(v) >= 2 and v[0] == v[-1] and v[0] in '"\'':
+            v = v[1:-1]
+        cfg[k.strip().upper()] = v
+    return cfg
+
+
+def decode(raw):
+    if raw.startswith(b'\xef\xbb\xbf'):
+        raw = raw[3:]
+    if raw[:2] in (b'\xff\xfe', b'\xfe\xff'):
+        return raw.decode('utf-16')
+    try:
+        return raw.decode('utf-8')
+    except UnicodeDecodeError:
+        return raw.decode('cp1252', errors='replace')
+
+
+def set_key(text, key, value):
+    """Sätter KEY=value i texten (ersätter första raden med nyckeln, annars läggs den till sist)."""
+    pat = re.compile(r'^[ \t]*%s[ \t]*=.*$' % re.escape(key), re.M | re.I)
+    line = '%s=%s' % (key, value)
+    if pat.search(text):
+        return pat.sub(lambda _: line, text, count=1)
+    return text.rstrip('\r\n') + '\n' + line + '\n'
+
+
+def drop_key(text, key):
+    return re.sub(r'^[ \t]*%s[ \t]*=.*(\r?\n|$)' % re.escape(key), '', text, flags=re.M | re.I)
+
+
+def rand_password(n):
+    return ''.join(secrets.choice(WORDS) for _ in range(n))
+
+
+# ------------------------------------------------------------------------------------------------------------
+# Plattans namn (samma regel som dash-firstboot: dash- + sista 4 hex i en Wi-Fi-adress härledd ur chip-id)
+# ------------------------------------------------------------------------------------------------------------
+def read_sid():
+    base = '/sys/bus/nvmem/devices'
+    try:
+        names = sorted(os.listdir(base))
+    except OSError:
+        return None
+    for n in names:
+        try:
+            # bara små enheter: på NAND-kärnan är varje MTD-partition också en nvmem-enhet (flera GB)
+            with open('%s/%s/nvmem' % (base, n), 'rb') as f:
+                data = f.read(64)
+                if f.read(1):
+                    continue
+        except OSError:
+            continue
+        if len(data) in (16, 32) and any(data) and data != b'\xff' * len(data):
+            return data
+    return None
+
+
+def device_name(sid):
+    h = hashlib.sha256(b'dash-wlan0-mac-v1' + sid).digest()
+    b = bytearray(h[:6])
+    b[0] = (b[0] & 0xFC) | 0x02
+    mac = ':'.join('%02x' % x for x in b)
+    return 'dash-' + mac[-5:].replace(':', ''), mac
+
+
+# ------------------------------------------------------------------------------------------------------------
+# NAND
+# ------------------------------------------------------------------------------------------------------------
+def module_loaded(name):
+    with open('/proc/modules') as f:
+        return any(line.split(' ', 1)[0] == name for line in f)
+
+
+def load_nand():
+    for mod in ('nand-btf.ko', 'sunxi_nand-btf.ko'):
+        name = 'nand' if mod.startswith('nand') else 'sunxi_nand'
+        if module_loaded(name):
+            raise Fel('drivrutinen %s var redan laddad (vanliga Armbian-versionen?). Starta om och försök igen.' % name)
+        run(['insmod', os.path.join(PAY, 'modules', mod)], check=True)
+    if not os.path.isdir(OVERLAY):
+        os.makedirs(OVERLAY)
+        with open(os.path.join(PAY, 'nand-install.dtbo'), 'rb') as f, open(OVERLAY + '/dtbo', 'wb') as o:
+            o.write(f.read())
+    for _ in range(60):
+        if len(mtd_by_name()) >= 4:
+            break
+        time.sleep(1)
+    time.sleep(2)
+    parts = mtd_by_name()
+    for need in ('boot', 'kernel-a', 'kernel-b', 'ubi'):
+        if need not in parts:
+            raise Fel('NAND-partitionen %s dök inte upp (hittade: %s)' % (need, ', '.join(parts) or 'inget'))
+    return parts
+
+
+def mtd_by_name():
+    out = {}
+    base = '/sys/class/mtd'
+    try:
+        for n in os.listdir(base):
+            if re.fullmatch(r'mtd\d+', n):
+                with open('%s/%s/name' % (base, n)) as f:
+                    out[f.read().strip()] = n
+    except OSError:
+        pass
+    return out
+
+
+def sysattr(mtd, attr):
+    with open('/sys/class/mtd/%s/%s' % (mtd, attr)) as f:
+        return f.read().strip()
+
+
+def check_geometry(parts):
+    want = {'boot': (0x1000000, 0x200000), 'kernel-a': (0x2000000, 0x200000), 'kernel-b': (0x2000000, 0x200000)}
+    for name, (size, es) in want.items():
+        m = parts[name]
+        if int(sysattr(m, 'size')) != size or int(sysattr(m, 'erasesize')) != es or \
+                int(sysattr(m, 'writesize')) != PAGE or int(sysattr(m, 'oobsize')) != OOB:
+            raise Fel('oväntad NAND-geometri på %s' % name)
+        if sysattr(m, 'type') != 'mlc-nand':
+            raise Fel('oväntad NAND-typ %s' % sysattr(m, 'type'))
+    u = parts['ubi']
+    if int(sysattr(u, 'erasesize')) != 0x100000 or not int(sysattr(u, 'flags'), 16) & 0x4000:
+        raise Fel('ubi-partitionen är inte i SLC-läge (parningsschemat för kretsen saknas?)')
+
+
+def mtd_open(mtd):
+    return os.open('/dev/' + mtd, os.O_RDWR)
+
+
+def bad_list(mtd):
+    """Block som drivrutinen anser dåliga (fabriksmarkering), räknat i partitionens egna eraseblock."""
+    es = int(sysattr(mtd, 'erasesize'))
+    size = int(sysattr(mtd, 'size'))
+    fd = os.open('/dev/' + mtd, os.O_RDONLY)
+    try:
+        return [i for i in range(size // es)
+                if fcntl.ioctl(fd, MEMGETBADBLOCK, bytearray(struct.pack('<q', i * es)), True) > 0]
+    finally:
+        os.close(fd)
+
+
+def erase_all(fd, size, label, es=BLOCK, skip=()):
+    bad = []
+    skip = set(skip)
+    for off in range(0, size, es):
+        if off // es in skip:
+            continue
+        try:
+            fcntl.ioctl(fd, MEMERASE64, struct.pack('<QQ', off, es))
+        except OSError:
+            bad.append(off // es)
+            try:
+                fcntl.ioctl(fd, MEMSETBADBLOCK, struct.pack('<q', off))
+            except OSError:
+                pass
+    if bad:
+        log('%s: block som inte gick att radera: %s' % (label, bad))
+    return bad
+
+
+def raw_req(fd, code, start, data, oob):
+    dbuf = ctypes.create_string_buffer(data, len(data))
+    obuf = ctypes.create_string_buffer(oob, len(oob))
+    fmt = '<QQQQQB7x12x4x' if code == MEMREAD else '<QQQQQB7x'
+    r = struct.pack(fmt, start, len(data), len(oob), ctypes.addressof(dbuf), ctypes.addressof(obuf), MTD_OPS_RAW)
+    fcntl.ioctl(fd, code, bytearray(r))
+    return dbuf.raw, obuf.raw
+
+
+def ecc_write(fd, off, data):
+    data = data + b'\xff' * ((-len(data)) % PAGE)
+    os.lseek(fd, off, 0)
+    n = os.write(fd, data)
+    if n != len(data):
+        raise Fel('kort skrivning på %#x' % off)
+    return data
+
+
+def ecc_check(fd, off, data):
+    os.lseek(fd, off, 0)
+    return os.read(fd, len(data)) == data
+
+
+def bitdiff(a, b):
+    return sum(bin(x ^ y).count('1') for x, y in zip(a, b))
+
+
+def write_boot(fd, spl, ub):
+    ps = PAGE + OOB
+    if len(spl) % ps:
+        raise Fel('SPL-filen har fel storlek')
+    for base in SPL_OFFS:
+        for i in range(len(spl) // ps):
+            chunk = spl[i * ps:(i + 1) * ps]
+            raw_req(fd, MEMWRITE, base + i * PAGE, chunk[:PAGE], chunk[PAGE:])
+    ubp = None
+    for base in UBOOT_OFFS:
+        ubp = ecc_write(fd, base, ub)
+    # kontroll: SPL läses rått (MLC har alltid några felbitar, startminnets ECC rättar 64 per 1 KiB)
+    worst = 0
+    for base in SPL_OFFS:
+        for i in range(len(spl) // ps):
+            d, o = raw_req(fd, MEMREAD, base + i * PAGE, b'\0' * PAGE, b'\0' * OOB)
+            exp = spl[i * ps:(i + 1) * ps]
+            worst = max(worst, bitdiff((d + o)[:1140], exp[:1140]))
+    if worst > 24:
+        raise Fel('SPL lästes tillbaka med för många felbitar (%d)' % worst)
+    for base in UBOOT_OFFS:
+        if not ecc_check(fd, base, ubp):
+            raise Fel('U-Boot på %#x skiljer vid tillbakaläsning' % base)
+    return worst
+
+
+def write_kernel(fd, zimg, dtb):
+    if len(zimg) > DTB_OFF:
+        raise Fel('kärnan är för stor')
+    a = ecc_write(fd, 0, zimg)
+    b = ecc_write(fd, DTB_OFF, dtb)
+    if not (ecc_check(fd, 0, a) and ecc_check(fd, DTB_OFF, b)):
+        raise Fel('kärna/enhetsträd skiljer vid tillbakaläsning')
+
+
+# ------------------------------------------------------------------------------------------------------------
+def sha256_file(path):
+    h = hashlib.sha256()
+    with open(path, 'rb') as f:
+        for chunk in iter(lambda: f.read(1 << 20), b''):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def check_payload():
+    with open(os.path.join(PAY, 'SHA256SUMS')) as f:
+        for line in f:
+            if not line.strip():
+                continue
+            want, name = line.split(None, 1)
+            name = name.strip().lstrip('*')
+            if sha256_file(os.path.join(PAY, name)) != want:
+                raise Fel('filen %s på kortet är skadad (kontrollsumman stämmer inte)' % name)
+
+
+def verify_root():
+    bad = 0
+    n = 0
+    with open(os.path.join(PAY, 'rootfs-manifest.sha256')) as f:
+        for line in f:
+            if not line.strip():
+                continue
+            want, name = line.split(None, 1)
+            name = name.strip().lstrip('*').lstrip('./')
+            n += 1
+            try:
+                if sha256_file(os.path.join(ROOT_MNT, name)) != want:
+                    bad += 1
+                    log('skiljer: %s' % name)
+            except OSError:
+                bad += 1
+                log('saknas: %s' % name)
+    return n, bad
+
+
+def install_root(parts, cfg_text, name):
+    u = '/dev/' + parts['ubi']
+    say('  Formaterar UBI och skriver systemet (ca 290 MB, några minuter)...')
+    r = run(['ubiformat', u, '-f', os.path.join(PAY, 'rootfs.ubi'), '-y', '-q'], timeout=3600)
+    if r.returncode != 0:
+        raise Fel('ubiformat: %s' % (r.stderr or r.stdout).strip()[-300:])
+    r = run(['ubiattach', '-p', u], timeout=600)
+    if r.returncode != 0:
+        raise Fel('ubiattach: %s' % (r.stderr or r.stdout).strip()[-300:])
+    m = re.search(r'UBI device number (\d+)', r.stdout)
+    ubi = 'ubi%s' % (m.group(1) if m else '0')
+    log(r.stdout.strip().splitlines()[0] if r.stdout.strip() else 'ubiattach ok')
+    os.makedirs(ROOT_MNT, exist_ok=True)
+    run(['mount', '-t', 'ubifs', '%s:rootfs' % ubi, ROOT_MNT], check=True)
+    try:
+        if not os.path.exists(os.path.join(ROOT_MNT, 'etc/dash-nand')):
+            raise Fel('det skrivna systemet saknar /etc/dash-nand')
+        say('  Kontrollerar det skrivna systemet...')
+        n, bad = verify_root()
+        if bad:
+            raise Fel('%d av %d kontrollerade filer skiljer i NAND' % (bad, n))
+        log('rotfilsystemet: %d filer kontrollerade, alla lika' % n)
+        d = os.path.join(ROOT_MNT, 'etc/dash-cfg')
+        os.makedirs(d, mode=0o700, exist_ok=True)
+        p = os.path.join(d, CFG_FILE)
+        with open(p + '.tmp', 'w', encoding='utf-8') as f:
+            f.write(cfg_text)
+            f.flush()
+            os.fsync(f.fileno())
+        os.chmod(p + '.tmp', 0o600)
+        os.replace(p + '.tmp', p)
+        with open(os.path.join(ROOT_MNT, 'etc/dash-nand'), 'a') as f:
+            f.write('installerad=%s\nnamn=%s\n' % (time.strftime('%Y-%m-%d %H:%M'), name))
+        run(['sync'])
+    finally:
+        run(['umount', ROOT_MNT])
+        run(['ubidetach', '-p', u])
+    return n
+
+
+# ------------------------------------------------------------------------------------------------------------
+def main():
+    if not cfg_mount():
+        log('ingen DASHCFG-partition; inget att göra')
+        return 0
+    p = cfg_find(CFG_FILE)
+    if not p:
+        log('%s saknas på DASHCFG; inget att göra' % CFG_FILE)
+        run(['umount', CFG_MNT])
+        return 0
+    with open(p, 'rb') as f:
+        text = decode(f.read())
+    cfg = parse_cfg(text)
+    flag = cfg.get('NAND_INSTALL', '').strip().lower()
+    fp = cfg_find(FLAG_FILE)
+    if fp:
+        with open(fp, 'rb') as f:
+            fcfg = parse_cfg(decode(f.read()))
+        flag = fcfg.get('NAND_INSTALL', flag).strip().lower() or flag
+    if os.environ.get('DASH_NAND_INSTALL'):              # manuell körning: DASH_NAND_INSTALL=yes dash-nand-install
+        flag = os.environ['DASH_NAND_INSTALL'].strip().lower()
+    if flag not in ('yes', 'ja', 'force'):
+        log('NAND_INSTALL är inte satt; vanlig start från kortet')
+        run(['umount', CFG_MNT])          # lämna inte DASHCFG monterad (då kan den inte monteras skrivbar senare)
+        return 0
+
+    run(['systemctl', 'stop', 'dash-panel.service'])
+    run(['chvt', '1'])
+    say('\033[2J\033[H')
+    say('==============================================================')
+    say('  dash-nand: INSTALLATION I PLATTANS INBYGGDA MINNE (NAND)')
+    say('==============================================================')
+
+    sid = read_sid()
+    if not sid:
+        # vissa plattor läser chip-id som bara nollor; dash-firstboot slumpar då adressen, vi tar Wi-Fi-chippets
+        try:
+            with open('/sys/class/net/wlan0/address') as f:
+                sid = f.read().strip().encode()
+        except OSError:
+            sid = os.urandom(16)
+        log('chip-id saknas; namnet räknas ur %s' % ('Wi-Fi-adressen' if len(sid) == 17 else 'slump'))
+    name, mac = device_name(sid)
+    say('Platta: %s   (Wi-Fi-adress %s)' % (name, mac))
+
+    rp = cfg_find(REPORT)
+    old = ''
+    if rp:
+        with open(rp, 'rb') as f:
+            old = decode(f.read())
+    if flag != 'force' and re.search(r'^%s\s.*\bOK\b' % re.escape(name), old, re.M):
+        say('')
+        say('%s ÄR REDAN INSTALLERAD från det här kortet.' % name)
+        say('Ta ut kortet och starta plattan igen. (NAND_INSTALL=force i nand-install.txt installerar om.)')
+        say('Plattan stängs av om 2 minuter.')
+        time.sleep(120)
+        run(['systemctl', 'poweroff'])
+        return 0
+
+    t0 = time.time()
+    say('')
+    say('1/6 Kontrollerar filerna på kortet...')
+    check_payload()
+
+    say('2/6 Startar NAND-drivrutinen...')
+    parts = load_nand()
+    check_geometry(parts)
+    log('partitioner: %s' % parts)
+    # Fabriksdåliga block, innan BBM-kontrollen stängs av. Är det orimligt många är det Androids gamla
+    # NFTL-data som ser ut som markeringar; då raderas allt och markeringarna läses om efteråt.
+    init_bad = {k: bad_list(parts[k]) for k in ('boot', 'kernel-a', 'kernel-b', 'ubi')}
+    nbad = sum(len(v) for v in init_bad.values())
+    trust = nbad <= MAX_FACTORY_BAD
+    log('dåliga block enligt drivrutinen: %s (%s)' % (
+        {k: v for k, v in init_bad.items() if v} or 'inga',
+        'fabriksmarkeringar, hoppas över' if trust else 'för många, troligen Android-data; raderas'))
+    skip = init_bad if trust else {k: [] for k in init_bad}
+    run(['insmod', os.path.join(PAY, 'modules', 'nandbbm.ko'), 'name=boot'], check=True)
+
+    say('3/6 Raderar startområdet och kärnområdena...')
+    fds = {k: mtd_open(parts[k]) for k in ('boot', 'kernel-a', 'kernel-b')}
+    for k in ('boot', 'kernel-a', 'kernel-b'):
+        size = int(sysattr(parts[k], 'size'))
+        if skip[k]:
+            raise Fel('%s har dåliga block %s; den här plattan behöver specialbehandling' % (k, skip[k]))
+        bad = erase_all(fds[k], size, k)
+        if bad:
+            raise Fel('%s har dåliga block %s; den här plattan behöver specialbehandling' % (k, bad))
+    say('    raderar systemområdet (UBI)...')
+    ufd = mtd_open(parts['ubi'])
+    ues = int(sysattr(parts['ubi'], 'erasesize'))
+    ubad = erase_all(ufd, int(sysattr(parts['ubi'], 'size')), 'ubi', es=ues, skip=skip['ubi'])
+    os.close(ufd)
+    if len(ubad) + len(skip['ubi']) > MAX_FACTORY_BAD:
+        raise Fel('för många block i systemområdet gick inte att radera (%d)' % len(ubad))
+
+    say('4/6 Skriver startladdaren (SPL + U-Boot) och kärnan...')
+    with open(os.path.join(PAY, 'sunxi-spl-with-ecc.bin'), 'rb') as f:
+        spl = f.read()
+    with open(os.path.join(PAY, 'u-boot.img'), 'rb') as f:
+        ub = f.read()
+    with open(os.path.join(PAY, 'zImage'), 'rb') as f:
+        zimg = f.read()
+    with open(os.path.join(PAY, 'dash-nand.dtb'), 'rb') as f:
+        dtb = f.read()
+    worst = write_boot(fds['boot'], spl, ub)
+    log('SPL: högst %d felbitar per steg vid rå tillbakaläsning (ok)' % worst)
+    for k in ('kernel-a', 'kernel-b'):
+        write_kernel(fds[k], zimg, dtb)
+    for fd in fds.values():
+        os.close(fd)
+    say('    startladdare och kärna skrivna och kontrollerade')
+
+    # inställningar till NAND-systemet
+    gen = []
+    ntext = drop_key(text, 'NAND_INSTALL')
+    # samma Wi-Fi-adress (och därmed samma namn) i NAND-systemet som i rapporten; utan chip-id skulle
+    # dash-firstboot annars slumpa en ny adress och plattan få ett annat namn än det som står i nand-installerade.txt
+    if cfg.get('WIFI_MAC', '').strip().lower() in ('', 'auto'):
+        ntext = set_key(ntext, 'WIFI_MAC', mac)
+    if not cfg.get('HOSTNAME', '').strip():
+        ntext = set_key(ntext, 'HOSTNAME', name)
+    root_pw = cfg.get('ROOT_PASSWORD', '')
+    if not root_pw:
+        root_pw = rand_password(14)
+        ntext = set_key(ntext, 'ROOT_PASSWORD', root_pw)
+        gen.append('root')
+    rescue_pw = cfg.get('RESCUE_PASSWORD', '')
+    if not rescue_pw or not 8 <= len(rescue_pw) <= 63:
+        rescue_pw = rand_password(12)
+        ntext = set_key(ntext, 'RESCUE_PASSWORD', rescue_pw)
+        gen.append('reservnät')
+
+    # BBM-kontrollen på igen (markeringarna läses direkt från kretsen) så att ubiformat hoppar över dåliga block
+    run(['rmmod', 'nandbbm'], check=True)
+    run(['insmod', os.path.join(PAY, 'modules', 'nandbbm.ko'), 'name=boot', 'restore=1'], check=True)
+    now_bad = bad_list(parts['ubi'])
+    log('systemområdet: dåliga block nu %s' % (now_bad or 'inga'))
+    if len(now_bad) > MAX_FACTORY_BAD:
+        raise Fel('systemområdet visar %d dåliga block efter radering' % len(now_bad))
+
+    say('5/6 Skriver systemet (UBIFS)...')
+    n = install_root(parts, ntext, name)
+    say('    systemet skrivet, %d filer kontrollerade' % n)
+
+    say('6/6 Skriver resultatet på kortet...')
+    line = '%s  %s  OK  root-lösenord: %s  reservnät: %s / %s%s\n' % (
+        name, time.strftime('%Y-%m-%d %H:%M'), root_pw, name, rescue_pw,
+        ('  (slumpade: %s)' % ', '.join(gen)) if gen else '')
+    if cfg_mount(rw=True):
+        rp = cfg_find(REPORT) or os.path.join(CFG_MNT, REPORT)
+        header = '' if os.path.exists(rp) else (
+            '# dash-nand: plattor som installerats i NAND från det här kortet.\n'
+            '# Namn, tid, root-lösenord och reservnätets namn/lösenord. Förvara kortet säkert.\n')
+        with open(rp, 'a', encoding='utf-8', newline='\r\n') as f:
+            f.write(header + line)
+            f.flush()
+            os.fsync(f.fileno())
+        run(['sync'])
+        cfg_mount(rw=False)
+    log('klart på %d s: %s' % (time.time() - t0, line.strip().split('  root')[0]))
+
+    say('')
+    say('==============================================================')
+    say('  KLART: %s är installerad i NAND (%d s).' % (name, time.time() - t0))
+    say('  root-lösenord: %s' % root_pw)
+    say('  reservnät:     %s  lösenord %s' % (name, rescue_pw))
+    say('  (står också i %s på kortet)' % REPORT)
+    say('')
+    say('  Plattan stängs av om 60 s. Ta sedan ut kortet och starta den.')
+    say('==============================================================')
+    time.sleep(60)
+    run(['systemctl', 'poweroff'])
+    return 0
+
+
+if __name__ == '__main__':
+    try:
+        sys.exit(main())
+    except Exception as e:                       # visas på skärmen; plattan lämnas påslagen för felsökning
+        say('')
+        say('!!! INSTALLATIONEN AVBRÖTS: %s' % e)
+        say('Plattan startar fortfarande från kortet. Logg: %s' % LOG)
+        log('fel: %r' % e)
+        run(['systemctl', 'mask', '--runtime', '--now', 'dash-panel.service'])   # låt meddelandet stå kvar
+        sys.exit(1)

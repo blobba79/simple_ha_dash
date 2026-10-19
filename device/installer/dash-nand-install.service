@@ -1,0 +1,19 @@
+[Unit]
+Description=dash-nand: installation i plattans NAND (bara med NAND_INSTALL=yes på kortet)
+Documentation=file:/opt/dash-nand/LASMIG.txt
+DefaultDependencies=no
+After=local-fs.target systemd-udevd.service sys-kernel-config.mount systemd-modules-load.service
+Wants=sys-kernel-config.mount
+Before=dash-firstboot.service dash-panel.service sysinit.target shutdown.target
+Conflicts=shutdown.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/dash-nand-install
+RemainAfterExit=yes
+TimeoutStartSec=infinity
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=sysinit.target

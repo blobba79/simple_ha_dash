@@ -1,0 +1,13 @@
+[Unit]
+Description=Kolla (och vid behov installera) ny version av dash-panel
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/dash-update auto
+Nice=10
+MemoryMax=120M
+TimeoutStartSec=600
+PrivateTmp=yes
+ProtectHome=yes
