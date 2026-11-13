@@ -173,13 +173,7 @@ class Game(sdk.GameBase):
     def targets(self):
         if not self.running or self.game_over:
             return [('start', OVERLAY)]
-        # Alla godisar som targets
-        ts = []
-        for r in range(ROWS):
-            for c in range(COLS):
-                if _is_clearable(self.board[r][c]):
-                    ts.append(('c%d_%d' % (r, c), _cell_rect(r, c)))
-        return ts
+        return []
 
     def on_tap(self, name):
         if name == 'start':
@@ -205,46 +199,35 @@ class Game(sdk.GameBase):
         r = (y - BY) // CELL
         c = (x - BX) // CELL
         if 0 <= r < ROWS and 0 <= c < COLS and _is_clearable(self.board[r][c]):
-            self._drag_r, self._drag_c = r, c
+            # Alla beslut i on_down - ingen on_up-beroende
+            if self.selected is None:
+                # Forsta trycket - val
+                self.selected = (r, c)
+                self.invalidate(_cell_rect(r, c))
+            elif self.selected == (r, c):
+                # Samma godis - avval
+                self.selected = None
+                self.invalidate(_cell_rect(r, c))
+            else:
+                # Annan godis - kolla om intilliggande
+                sr, sc = self.selected
+                if abs(r - sr) + abs(c - sc) == 1:
+                    # Intilliggande - byt
+                    self.swap_r1, self.swap_c1 = sr, sc
+                    self.swap_r2, self.swap_c2 = r, c
+                    self.selected = None
+                    self._try_swap()
+                else:
+                    # Inte intilliggande - val ny
+                    self.invalidate(_cell_rect(sr, sc))
+                    self.selected = (r, c)
+                    self.invalidate(_cell_rect(r, c))
 
     def on_move(self, x, y):
-        if self._drag_r is None or self.processing:
-            return
-        r = (y - BY) // CELL
-        c = (x - BX) // CELL
-        dr, dc = abs(r - self._drag_r), abs(c - self._drag_c)
-        if (dr + dc == 1) and 0 <= r < ROWS and 0 <= c < COLS:
-            if _is_clearable(self.board[r][c]):
-                self.swap_r1, self.swap_c1 = self._drag_r, self._drag_c
-                self.swap_r2, self.swap_c2 = r, c
-                self._drag_r = self._drag_c = None
-                self._try_swap()
+        pass
 
     def on_up(self, x, y):
-        self._drag_r = self._drag_c = None
-
-    def _tap_candy(self, r, c):
-        """Hantera tryck på en godis (välj/byt)."""
-        if self.processing or not self.running or self.game_over:
-            return
-        if not (0 <= r < ROWS and 0 <= c < COLS) or not _is_clearable(self.board[r][c]):
-            return
-        if self.selected is None:
-            self.selected = (r, c)
-            self.invalidate(_cell_rect(r, c))
-        else:
-            sr, sc = self.selected
-            if abs(r - sr) + abs(c - sc) == 1:
-                self.swap_r1, self.swap_c1 = sr, sc
-                self.swap_r2, self.swap_c2 = r, c
-                self.selected = None
-                self._try_swap()
-            elif self.selected == (r, c):
-                self.selected = None
-                self.invalidate(_cell_rect(sr, sc))
-            else:
-                self.selected = (r, c)
-                self.invalidate(sdk.union(_cell_rect(sr, sc), _cell_rect(r, c)))
+        pass
 
     # ---- nya spelet ----
     def _new_game(self):
@@ -481,19 +464,19 @@ class Game(sdk.GameBase):
                     if not _is_clearable(t):
                         continue
                     cx, cy = _cell_center(r, c)
-                    # Rita markerad godis med kant
+                    # Rita markerad godis med ljus bakgrund och gul kant
                     if self.selected == (r, c):
-                        sdk.bbox(img, BX + c * CELL + 2, BY + r * CELL + 2,
-                                 BX + (c + 1) * CELL - 2, BY + (r + 1) * CELL - 2,
-                                 12, (40, 40, 40), sdk.YELLOW, 3)
+                        sdk.fill(img, (BX + c * CELL, BY + r * CELL, BX + (c + 1) * CELL, BY + (r + 1) * CELL), (60, 60, 80))
+                        r2 = CELL // 2 - 4
+                        sdk.circle(img, cx - r2 - 2, cy - r2 - 2, (r2 + 2) * 2, sdk.YELLOW)
                     if t == 10:  # radrensare
-                        _draw_striped_h(img, cx, cy, t, CELL - 12)
+                        _draw_striped_h(img, cx, cy, t, CELL - 8)
                     elif t == 11:  # kolumnrensare
-                        _draw_striped_v(img, cx, cy, t, CELL - 12)
+                        _draw_striped_v(img, cx, cy, t, CELL - 8)
                     elif t == 12:  # bomb
-                        _draw_bomb(img, cx, cy, t, CELL - 12)
+                        _draw_bomb(img, cx, cy, t, CELL - 8)
                     else:
-                        _draw_candy(img, cx, cy, t, CELL - 12)
+                        _draw_candy(img, cx, cy, t, CELL - 8)
 
         # Startskärm / game over overlay
         if not self.running or self.game_over:
