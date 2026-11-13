@@ -130,6 +130,7 @@ class Game(sdk.GameBase):
         self.best = 0
         self.board = [[-1] * COLS for _ in range(ROWS)]
         self.selected = None          # vald godis (r, c) eller None
+        self._drag_r = self._drag_c = None  # drar mellan celler
         self.processing = False       # blockerar input under cascade
         self.running = False
         self.score = 0
@@ -181,63 +182,69 @@ class Game(sdk.GameBase):
         return ts
 
     def on_tap(self, name):
-        try:
-            if name == 'start':
-                if self.game_over or not self.running:
-                    self._new_game()
-                self.save_soon()
-                self.invalidate()
-                return
-            # Om namnet är 'cR_C' så är det en godis som trycktes på
-            if name.startswith('c'):
-                parts = name[1:].split('_')
-                if len(parts) == 2:
-                    r, c = int(parts[0]), int(parts[1])
+        if name == 'start':
+            if self.game_over or not self.running:
+                self._new_game()
+            self.save_soon()
+            self.invalidate()
+            return
+        if len(name) >= 3 and name[0] == 'c':
+            try:
+                rest = name[1:]
+                underscore_pos = rest.find('_')
+                if underscore_pos > 0:
+                    r = int(rest[:underscore_pos])
+                    c = int(rest[underscore_pos + 1:])
                     self._tap_candy(r, c)
-        except Exception as e:
-            self.log('FEL on_tap: %s' % e)
+            except Exception:
+                pass
 
     def on_down(self, x, y):
-        pass
+        if self.processing or not self.running or self.game_over:
+            return
+        r = (y - BY) // CELL
+        c = (x - BX) // CELL
+        if 0 <= r < ROWS and 0 <= c < COLS and _is_clearable(self.board[r][c]):
+            self._drag_r, self._drag_c = r, c
 
     def on_move(self, x, y):
-        pass
+        if self._drag_r is None or self.processing:
+            return
+        r = (y - BY) // CELL
+        c = (x - BX) // CELL
+        dr, dc = abs(r - self._drag_r), abs(c - self._drag_c)
+        if (dr + dc == 1) and 0 <= r < ROWS and 0 <= c < COLS:
+            if _is_clearable(self.board[r][c]):
+                self.swap_r1, self.swap_c1 = self._drag_r, self._drag_c
+                self.swap_r2, self.swap_c2 = r, c
+                self._drag_r = self._drag_c = None
+                self._try_swap()
 
     def on_up(self, x, y):
-        pass
+        self._drag_r = self._drag_c = None
 
     def _tap_candy(self, r, c):
-        """Hantera tryck på en godis."""
-        if not self.running or self.game_over or self.processing:
+        """Hantera tryck på en godis (välj/byt)."""
+        if self.processing or not self.running or self.game_over:
             return
-        if not (0 <= r < ROWS and 0 <= c < COLS):
+        if not (0 <= r < ROWS and 0 <= c < COLS) or not _is_clearable(self.board[r][c]):
             return
-        if not _is_clearable(self.board[r][c]):
-            return
-
         if self.selected is None:
-            # Välj första godisen
             self.selected = (r, c)
             self.invalidate(_cell_rect(r, c))
         else:
             sr, sc = self.selected
-            # Kolla om intilliggande
-            dr, dc = abs(r - sr), abs(c - sc)
-            if dr + dc == 1:
-                # Intilliggande - byt
+            if abs(r - sr) + abs(c - sc) == 1:
                 self.swap_r1, self.swap_c1 = sr, sc
                 self.swap_r2, self.swap_c2 = r, c
                 self.selected = None
                 self._try_swap()
+            elif self.selected == (r, c):
+                self.selected = None
+                self.invalidate(_cell_rect(sr, sc))
             else:
-                # Inte intilliggande - välj ny istället
-                if self.selected == (r, c):
-                    # Samma godis - avvälja
-                    self.selected = None
-                    self.invalidate(_cell_rect(sr, sc))
-                else:
-                    self.selected = (r, c)
-                    self.invalidate(sdk.union(_cell_rect(sr, sc), _cell_rect(r, c)))
+                self.selected = (r, c)
+                self.invalidate(sdk.union(_cell_rect(sr, sc), _cell_rect(r, c)))
 
     # ---- nya spelet ----
     def _new_game(self):
