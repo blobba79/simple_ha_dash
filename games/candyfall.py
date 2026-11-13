@@ -325,24 +325,7 @@ class Game(sdk.GameBase):
         pass
 
     def on_up(self, x, y):
-        # Swap-logik for drag (on_down pa en cell, on_up pa en annan)
-        if self.selected is None or self.processing or not self.running or self.game_over:
-            return
-        r = (y - BY) // CELL
-        c = (x - BX) // CELL
-        if 0 <= r < ROWS and 0 <= c < COLS and _is_clearable(self.board[r][c]):
-            sr, sc = self.selected
-            if abs(r - sr) + abs(c - sc) == 1:
-                # Intilliggande - byt
-                self.swap_r1, self.swap_c1 = sr, sc
-                self.swap_r2, self.swap_c2 = r, c
-                self.selected = None
-                self._try_swap()
-            else:
-                # Inte intilliggande - val ny
-                self.invalidate(_cell_rect(sr, sc))
-                self.selected = (r, c)
-                self.invalidate(_cell_rect(r, c))
+        pass
 
     # ---- nya spelet ----
     def _new_game(self):
@@ -486,7 +469,10 @@ class Game(sdk.GameBase):
 
             # Rita rensade
             cleared_rects = [_cell_rect(r, c) for (r, c) in cleared]
-            self.invalidate(sdk.union(*cleared_rects))
+            union_rect = cleared_rects[0]
+            for rect in cleared_rects[1:]:
+                union_rect = sdk.union(union_rect, rect)
+            self.invalidate(union_rect)
 
             # Gravitation: lat godisar falla
             falling_cells = self._apply_gravity_with_animation(now)
