@@ -325,7 +325,24 @@ class Game(sdk.GameBase):
         pass
 
     def on_up(self, x, y):
-        pass
+        # Swap-logik for drag (on_down pa en cell, on_up pa en annan)
+        if self.selected is None or self.processing or not self.running or self.game_over:
+            return
+        r = (y - BY) // CELL
+        c = (x - BX) // CELL
+        if 0 <= r < ROWS and 0 <= c < COLS and _is_clearable(self.board[r][c]):
+            sr, sc = self.selected
+            if abs(r - sr) + abs(c - sc) == 1:
+                # Intilliggande - byt
+                self.swap_r1, self.swap_c1 = sr, sc
+                self.swap_r2, self.swap_c2 = r, c
+                self.selected = None
+                self._try_swap()
+            else:
+                # Inte intilliggande - val ny
+                self.invalidate(_cell_rect(sr, sc))
+                self.selected = (r, c)
+                self.invalidate(_cell_rect(r, c))
 
     # ---- nya spelet ----
     def _new_game(self):
@@ -540,14 +557,16 @@ class Game(sdk.GameBase):
                     self._falling[(r, c)] = (r - 3, now)
 
     # ---- match-detektion ----
-    def _find_matches(self):
+    def _find_matches(self, board=None):
         """Hitta alla horisontella och vertikala matches (3+)."""
+        if board is None:
+            board = self.board
         matches = []
         # horisontella
         for r in range(ROWS):
             count = 1
             for c in range(1, COLS):
-                if _is_clearable(self.board[r][c]) and self.board[r][c] == self.board[r][c - 1]:
+                if _is_clearable(board[r][c]) and board[r][c] == board[r][c - 1]:
                     count += 1
                 else:
                     if count >= 3:
@@ -560,7 +579,7 @@ class Game(sdk.GameBase):
         for c in range(COLS):
             count = 1
             for r in range(1, ROWS):
-                if _is_clearable(self.board[r][c]) and self.board[r][c] == self.board[r - 1][c]:
+                if _is_clearable(board[r][c]) and board[r][c] == board[r - 1][c]:
                     count += 1
                 else:
                     if count >= 3:
