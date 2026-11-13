@@ -194,34 +194,37 @@ class Game(sdk.GameBase):
                 pass
 
     def on_down(self, x, y):
-        if self.processing or not self.running or self.game_over:
-            return
-        r = (y - BY) // CELL
-        c = (x - BX) // CELL
-        if 0 <= r < ROWS and 0 <= c < COLS and _is_clearable(self.board[r][c]):
-            # Alla beslut i on_down - ingen on_up-beroende
-            if self.selected is None:
-                # Forsta trycket - val
-                self.selected = (r, c)
-                self.invalidate(_cell_rect(r, c))
-            elif self.selected == (r, c):
-                # Samma godis - avval
-                self.selected = None
-                self.invalidate(_cell_rect(r, c))
-            else:
-                # Annan godis - kolla om intilliggande
-                sr, sc = self.selected
-                if abs(r - sr) + abs(c - sc) == 1:
-                    # Intilliggande - byt
-                    self.swap_r1, self.swap_c1 = sr, sc
-                    self.swap_r2, self.swap_c2 = r, c
-                    self.selected = None
-                    self._try_swap()
-                else:
-                    # Inte intilliggande - val ny
-                    self.invalidate(_cell_rect(sr, sc))
+        try:
+            if self.processing or not self.running or self.game_over:
+                return
+            r = (y - BY) // CELL
+            c = (x - BX) // CELL
+            if 0 <= r < ROWS and 0 <= c < COLS and _is_clearable(self.board[r][c]):
+                # Alla beslut i on_down - ingen on_up-beroende
+                if self.selected is None:
+                    # Forsta trycket - val
                     self.selected = (r, c)
                     self.invalidate(_cell_rect(r, c))
+                elif self.selected == (r, c):
+                    # Samma godis - avval
+                    self.selected = None
+                    self.invalidate(_cell_rect(r, c))
+                else:
+                    # Annan godis - kolla om intilliggande
+                    sr, sc = self.selected
+                    if abs(r - sr) + abs(c - sc) == 1:
+                        # Intilliggande - byt
+                        self.swap_r1, self.swap_c1 = sr, sc
+                        self.swap_r2, self.swap_c2 = r, c
+                        self.selected = None
+                        self._try_swap()
+                    else:
+                        # Inte intilliggande - val ny
+                        self.invalidate(_cell_rect(sr, sc))
+                        self.selected = (r, c)
+                        self.invalidate(_cell_rect(r, c))
+        except Exception as e:
+            self.log('KRASH on_down: %s' % e)
 
     def on_move(self, x, y):
         pass
@@ -279,101 +282,109 @@ class Game(sdk.GameBase):
 
     # ---- swap & match ----
     def _try_swap(self):
-        r1, c1, r2, c2 = self.swap_r1, self.swap_c1, self.swap_r2, self.swap_c2
-        # byt
-        self.board[r1][c1], self.board[r2][c2] = self.board[r2][c2], self.board[r1][c1]
-        matches = self._find_matches()
-        if matches:
-            self.processing = True
-            self._cascade()
-        else:
-            # byt tillbaka
+        try:
+            r1, c1, r2, c2 = self.swap_r1, self.swap_c1, self.swap_r2, self.swap_c2
+            # byt
             self.board[r1][c1], self.board[r2][c2] = self.board[r2][c2], self.board[r1][c1]
-            self.invalidate(sdk.union(_cell_rect(r1, c1), _cell_rect(r2, c2)))
+            matches = self._find_matches()
+            if matches:
+                self.processing = True
+                self._cascade()
+            else:
+                # byt tillbaka
+                self.board[r1][c1], self.board[r2][c2] = self.board[r2][c2], self.board[r1][c1]
+                self.invalidate(sdk.union(_cell_rect(r1, c1), _cell_rect(r2, c2)))
+        except Exception as e:
+            self.log('KRASH _try_swap: %s' % e)
 
     def _cascade(self):
         """Kör ett steg av cascade: hitta-matcha-rensa-gravitfyll."""
-        matches = self._find_matches()
-        if not matches:
-            self.processing = False
-            self.save_soon()
-            self.invalidate()
-            return
+        try:
+            matches = self._find_matches()
+            if not matches:
+                self.processing = False
+                self.save_soon()
+                self.invalidate()
+                return
 
-        # gruppera matchade celler och skapa specialer
-        cleared = set()
-        for cells in matches:
-            sz = len(cells)
-            if sz >= 4:
-                # välj en godis att göra till special
-                sr, sc = cells[sz // 2]
+            # gruppera matchade celler och skapa specialer
+            cleared = set()
+            for cells in matches:
+                sz = len(cells)
+                if sz >= 4:
+                    # välj en godis att göra till special
+                    sr, sc = cells[sz // 2]
+                    if sz >= 5:
+                        # 5+ = bomb (type 12)
+                        self.board[sr][sc] = 12
+                    else:
+                        # 4 = radrensare (type 10)
+                        self.board[sr][sc] = 10
+                for (mr, mc) in cells:
+                    cleared.add((mr, mc))
+
+            # hantera specialer från matchade celler
+            for (mr, mc) in list(cleared):
+                t = self.board[mr][mc]
+                if _is_special(t):
+                    st = _special_type(t)
+                    if st == 0:  # radrensare
+                        for cc in range(COLS):
+                            cleared.add((mr, cc))
+                    elif st == 1:  # kolumnrensare
+                        for rr in range(ROWS):
+                            cleared.add((rr, mc))
+                    elif st == 2:  # bomb
+                        for dr in range(-1, 2):
+                            for dc in range(-1, 2):
+                                nr, nc = mr + dr, mc + dc
+                                if 0 <= nr < ROWS and 0 <= nc < COLS:
+                                    cleared.add((nr, nc))
+
+            # beräkna poäng och tid
+            points = len(cleared) * 10
+            match_sizes = self._get_match_sizes(matches)
+            time_gain = 0
+            for sz in match_sizes:
                 if sz >= 5:
-                    # 5+ = bomb (type 12)
-                    self.board[sr][sc] = 12
+                    time_gain += TIME_5
+                elif sz == 4:
+                    time_gain += TIME_4
                 else:
-                    # 4 = radrensare (type 10)
-                    self.board[sr][sc] = 10
-            for (mr, mc) in cells:
-                cleared.add((mr, mc))
+                    time_gain += TIME_3
+            # bonus för specialer
+            has_special = any(_is_special(self.board[mr][mc]) for (mr, mc) in cleared)
+            if has_special:
+                time_gain += TIME_SPECIAL
 
-        # hantera specialer från matchade celler
-        for (mr, mc) in list(cleared):
-            t = self.board[mr][mc]
-            if _is_special(t):
-                st = _special_type(t)
-                if st == 0:  # radrensare
-                    for cc in range(COLS):
-                        cleared.add((mr, cc))
-                elif st == 1:  # kolumnrensare
-                    for rr in range(ROWS):
-                        cleared.add((rr, mc))
-                elif st == 2:  # bomb
-                    for dr in range(-1, 2):
-                        for dc in range(-1, 2):
-                            nr, nc = mr + dr, mc + dc
-                            if 0 <= nr < ROWS and 0 <= nc < COLS:
-                                cleared.add((nr, nc))
+            self.time_left = min(self.time_left + time_gain, MAX_TIME)  # max 120s
+            self.score += points
 
-        # beräkna poäng och tid
-        points = len(cleared) * 10
-        match_sizes = self._get_match_sizes(matches)
-        time_gain = 0
-        for sz in match_sizes:
-            if sz >= 5:
-                time_gain += TIME_5
-            elif sz == 4:
-                time_gain += TIME_4
-            else:
-                time_gain += TIME_3
-        # bonus för specialer
-        has_special = any(_is_special(self.board[mr][mc]) for (mr, mc) in cleared)
-        if has_special:
-            time_gain += TIME_SPECIAL
+            # rensa celler
+            for (mr, mc) in cleared:
+                self.board[mr][mc] = -1
 
-        self.time_left = min(self.time_left + time_gain, MAX_TIME)  # max 120s
-        self.score += points
+            # rita rensade
+            cleared_rects = [_cell_rect(r, c) for (r, c) in cleared]
+            self.invalidate(sdk.union(*cleared_rects))
 
-        # rensa celler
-        for (mr, mc) in cleared:
-            self.board[mr][mc] = -1
+            # gravitation: låt godisar falla
+            self._apply_gravity()
 
-        # rita rensade
-        cleared_rects = [_cell_rect(r, c) for (r, c) in cleared]
-        self.invalidate(sdk.union(*cleared_rects))
+            # fyll tomrum
+            self._fill_gaps()
 
-        # gravitation: låt godisar falla
-        self._apply_gravity()
+            # rita brädet
+            self.invalidate(BOARD)
+            self.invalidate(SCORE)
+            self.invalidate(TIME_BAR)
 
-        # fyll tomrum
-        self._fill_gaps()
-
-        # rita brädet
-        self.invalidate(BOARD)
-        self.invalidate(SCORE)
-        self.invalidate(TIME_BAR)
-
-        # nästa cascade-steg
-        self.later('cascade', 0.15, self._cascade)
+            # nästa cascade-steg
+            self.later('cascade', 0.15, self._cascade)
+        except Exception as e:
+            self.log('KRASH cascade: %s' % e)
+            self.processing = False
+            self.invalidate()
 
     def _get_match_sizes(self, matches):
         """Ger listan med match-storlekar."""
