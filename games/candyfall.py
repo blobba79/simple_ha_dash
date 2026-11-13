@@ -24,7 +24,10 @@ HUD = (PAD, 96, 1024 - PAD, 120)
 TIME_BAR = (PAD, 124, 1024 - PAD, 144)
 TIME_BAR_BG = (PAD + 4, 128, 1024 - PAD - 4, 140)
 SCORE = (PAD, 128, 300, 152)
-START = (360, 260, 664, 330)
+
+# Overlay / start-knapp
+OVERLAY = (262, 160, 762, 440)
+START = (380, 340, 644, 400)
 
 # --- färger (ljusa godisar på mörk bakgrund) ---
 CANDY = [
@@ -170,7 +173,7 @@ class Game(sdk.GameBase):
 
     def targets(self):
         if not self.running or self.game_over:
-            return [('start', START)]
+            return [('start', OVERLAY)]
         return []
 
     def on_tap(self, name):
@@ -472,22 +475,23 @@ class Game(sdk.GameBase):
                                cy + sdk.snap(dy) - (CELL // 2 - 2),
                                CELL - 4, bright)
 
-        # Startskärm / game over
-        if sdk.meets(rect, START):
-            if not self.running or self.game_over:
-                sdk.fill(img, sdk.clip(rect, BOARD), sdk.BG)
-                sdk.rbox(img, 262, 180, 762, 420, 24, sdk.CARD)
-                sdk.bbox(img, 262, 180, 762, 420, 24, sdk.CARD, sdk.CARD_BORDER, 2)
+        # Startskärm / game over overlay
+        if not self.running or self.game_over:
+            if sdk.meets(rect, OVERLAY):
+                sdk.fill(img, sdk.clip(rect, OVERLAY), sdk.BG)
+                sdk.rbox(img, OVERLAY[0], OVERLAY[1], OVERLAY[2], OVERLAY[3], 24, sdk.CARD)
+                sdk.bbox(img, OVERLAY[0], OVERLAY[1], OVERLAY[2], OVERLAY[3], 24, sdk.CARD, sdk.CARD_BORDER, 2)
                 if self.game_over:
-                    sdk.centered(img, 512, 230, 'Slut!', 500, 40, sdk.RED)
-                    sdk.centered(img, 512, 280, 'Poang: %d' % self.score, 400, 28, sdk.TEXT)
+                    sdk.centered(img, 512, 210, 'Slut!', 500, 40, sdk.RED)
+                    sdk.centered(img, 512, 260, 'Poang: %d' % self.score, 400, 28, sdk.TEXT)
                     if self.score >= self.best:
-                        sdk.centered(img, 512, 320, 'Nytt rekord!', 500, 24, sdk.GREEN)
+                        sdk.centered(img, 512, 300, 'Nytt rekord!', 500, 24, sdk.GREEN)
                 else:
-                    sdk.centered(img, 512, 230, 'Candy Fall', 500, 36, sdk.BLUE_L)
-                    sdk.centered(img, 512, 275, 'Matcha 3+ godisar', 400, 22, sdk.MUTED)
-                    sdk.centered(img, 512, 305, 'för att fa tid!', 400, 22, sdk.MUTED)
-                sdk.centered(img, 512, 370, 'Start', 500, 30, sdk.TEXT)
+                    sdk.centered(img, 512, 210, 'Candy Fall', 500, 36, sdk.BLUE_L)
+                    sdk.centered(img, 512, 255, 'Matcha 3+ godisar', 400, 22, sdk.MUTED)
+                    sdk.centered(img, 512, 285, 'for att fa tid!', 400, 22, sdk.MUTED)
+                # Start-knapp
+                sdk.button(img, START, 'Start', 'primary', self.pressed == 'start', size=28)
 
         # Rekord
         if sdk.meets(rect, (PAD, 430, 400, 470)):
