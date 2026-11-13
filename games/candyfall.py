@@ -1,20 +1,21 @@
-"""Candy Fall: matcha godisar innan tiden rinner ut! Dra mellan intilliggande rutor för att byta platser.
+"""Candy Fall: matcha godisar innan tiden rinner ut! Dra mellan intilliggande rutor for att byta platser.
 3+ i rad = borta + tid. 4 = radrensare. 5+ = bomb som rensar 3x3. Specialer = MASSIV tid!"""
 from dashpanel import gamesdk as sdk
+import time
 
 META = {
     'api': 1,
     'id': 'candyfall',
     'name': 'Candy Fall',
-    'desc': 'Matcha godisar innan tiden rinner ut! 3+ = tid, 4+ = specialer, 5+ = MASSIV tid!',
+    'desc': 'Matcha godisar innan tiden rinner ut! 3+ = tid, specialer = MASSIV tid!',
     'version': 1,
 }
 
-# --- bräde ---
+# --- brade ---
 COLS, ROWS = 8, 7
 CELL = 64
 PAD = 16
-BX, BY = PAD, 148                       # brädets övre vänstra
+BX, BY = PAD, 148                       # bradets ovre vatra
 BOARD = (BX - PAD, BY - PAD, BX + COLS * CELL + PAD, BY + ROWS * CELL + PAD)
 BOARD_W = COLS * CELL
 BOARD_H = ROWS * CELL
@@ -29,15 +30,17 @@ SCORE = (PAD, 128, 300, 152)
 OVERLAY = (262, 160, 762, 440)
 START = (380, 340, 644, 400)
 
-# --- färger (ljusa godisar på mörk bakgrund) ---
+# --- farver (ljusa godisar pa mork bakgrund) ---
 CANDY = [
-    (239, 68, 68),    # 0 röd
-    (59, 130, 246),   # 1 blå
-    (34, 197, 94),    # 2 grön
+    (239, 68, 68),    # 0 roed
+    (59, 130, 246),   # 1 bla
+    (34, 197, 94),    # 2 groen
     (250, 204, 21),   # 3 gul
     (168, 85, 247),   # 4 lila
     (251, 146, 60),   # 5 orange
 ]
+
+# Speciel farver
 SPECIAL_COLORS = [
     None,
     (255, 255, 255),  # radrensare (horisontell)
@@ -48,11 +51,15 @@ SPECIAL_COLORS = [
 # --- tid (allt i centisekunder = heltal) ---
 INIT_TIME = 6000                           # starttid (60s * 100)
 DRAIN = 100                                # centisekunder per sekund
-TIME_3 = 200                               # tid för 3-match
-TIME_4 = 400                               # tid för 4-match
-TIME_5 = 800                               # tid för 5-match
-TIME_SPECIAL = 1200                        # tid för special-match
+TIME_3 = 200                               # tid for 3-match
+TIME_4 = 400                               # tid for 4-match
+TIME_5 = 800                               # tid for 5-match
+TIME_SPECIAL = 1200                        # tid for special-match
 MAX_TIME = 12000                           # max 120s
+
+# --- animation ---
+FALL_DURATION = 0.25                       # 250ms for fall
+FADE_DURATION = 0.15                       # 150ms for fade out
 
 
 def _candy_color(t):
@@ -79,38 +86,122 @@ def _is_clearable(t):
     return t >= 0
 
 
-# --- ritning av godisar ---
+# ================================================================
+# Ritning av snyggare godisar
+# ================================================================
 def _draw_candy(img, cx, cy, t, size):
-    """Ritar en godis i center (cx, cy) med diameter size."""
-    r = size // 2 - 2
+    """Ritar en snygg godis med 3D-effekt, highlight och skugga."""
+    r = size // 2 - 4
     col = _candy_color(t)
-    sdk.circle(img, cx - r, cy - r, size - 4, col)
-    if _is_special(t):
-        st = _special_type(t)
-        sc = SPECIAL_COLORS[st]
-        sdk.circle(img, cx - 6, cy - 6, 12, sc)
+
+    # Yttre kant (mork ram)
+    sdk.circle(img, cx - r, cy - r, r * 2, (20, 20, 20))
+
+    # Huvudkropp
+    sdk.circle(img, cx - r + 2, cy - r + 2, r * 2 - 4, col)
+
+    # Highlight (ovre vstra) - liten vit fläck
+    sdk.circle(img, cx - r + 6, cy - r + 6, 6, (255, 255, 255))
 
 
 def _draw_striped_h(img, cx, cy, t, size):
+    """Radrensare - horisontella strimor."""
+    r = size // 2 - 4
     col = _candy_color(t)
-    sdk.circle(img, cx - (size // 2 - 2), cy - (size // 2 - 2), size - 4, col)
-    for dy in range(-size // 2 + 6, size // 2 - 4, 8):
-        sdk.circle(img, cx - 4, cy + dy - 2, 4, (255, 255, 255))
+
+    # Kant
+    sdk.circle(img, cx - r, cy - r, r * 2, (20, 20, 20))
+
+    # Huvudkropp
+    sdk.circle(img, cx - r + 2, cy - r + 2, r * 2 - 4, col)
+
+    # Strimor
+    for dy in range(-r + 6, r - 4, 10):
+        sdk.circle(img, cx - 2, cy + dy - 1, 4, (255, 255, 255))
+
+    # Highlight
+    sdk.circle(img, cx - r + 6, cy - r + 6, 6, (255, 255, 255))
+
+    # Pil-ikoner (horisontell)
+    sdk.circle(img, cx - 12, cy - 4, 6, (255, 255, 255))
+    sdk.circle(img, cx + 10, cy - 4, 6, (255, 255, 255))
 
 
 def _draw_striped_v(img, cx, cy, t, size):
+    """Kolumnrensare - vertikala strimor."""
+    r = size // 2 - 4
     col = _candy_color(t)
-    sdk.circle(img, cx - (size // 2 - 2), cy - (size // 2 - 2), size - 4, col)
-    for dx in range(-size // 2 + 6, size // 2 - 4, 8):
-        sdk.circle(img, cx + dx - 2, cy - 4, 4, (255, 255, 255))
+
+    # Kant
+    sdk.circle(img, cx - r, cy - r, r * 2, (20, 20, 20))
+
+    # Huvudkropp
+    sdk.circle(img, cx - r + 2, cy - r + 2, r * 2 - 4, col)
+
+    # Strimor
+    for dx in range(-r + 6, r - 4, 10):
+        sdk.circle(img, cx + dx - 1, cy - 2, 4, (255, 255, 255))
+
+    # Highlight
+    sdk.circle(img, cx - r + 6, cy - r + 6, 6, (255, 255, 255))
+
+    # Pil-ikoner (vertikal)
+    sdk.circle(img, cx - 4, cy - 12, 6, (255, 255, 255))
+    sdk.circle(img, cx - 4, cy + 10, 6, (255, 255, 255))
 
 
 def _draw_bomb(img, cx, cy, t, size):
-    r = size // 2 - 2
+    """Bomb - 3x3 rensare med pulserande effekt."""
+    r = size // 2 - 4
     col = _candy_color(t)
-    sdk.circle(img, cx - r, cy - r, size - 4, col)
-    sdk.circle(img, cx - 10, cy - 10, 20, (255, 255, 255))
-    sdk.circle(img, cx - 6, cy - 6, 12, (200, 0, 200))
+
+    # Kant
+    sdk.circle(img, cx - r, cy - r, r * 2, (20, 20, 20))
+
+    # Huvudkropp (morkare)
+    sdk.circle(img, cx - r + 2, cy - r + 2, r * 2 - 4, (col[0] // 2, col[1] // 2, col[2] // 2))
+
+    # Inre cirkel
+    sdk.circle(img, cx - r + 6, cy - r + 6, (r - 6) * 2, col)
+
+    # X-mark
+    sdk.circle(img, cx - 8, cy - 8, 4, (255, 255, 255))
+    sdk.circle(img, cx + 6, cy - 8, 4, (255, 255, 255))
+    sdk.circle(img, cx - 8, cy + 6, 4, (255, 255, 255))
+    sdk.circle(img, cx + 6, cy + 6, 4, (255, 255, 255))
+
+    # Highlight
+    sdk.circle(img, cx - r + 6, cy - r + 6, 6, (255, 255, 255))
+
+
+def _draw_fading_candy(img, cx, cy, t, size, alpha):
+    """Ritar en godis med genomskinlighet for fade-out-effekt."""
+    r = size // 2 - 4
+    col = _candy_color(t)
+
+    # Kant
+    sdk.circle(img, cx - r, cy - r, r * 2, (20, 20, 20))
+
+    # Huvudkropp
+    sdk.circle(img, cx - r + 2, cy - r + 2, r * 2 - 4, col)
+
+    # Highlight
+    sdk.circle(img, cx - r + 6, cy - r + 6, 6, (255, 255, 255))
+
+
+def _draw_candy_flying(img, cx, cy, t, size):
+    """Ritar en godis pa en godtycklig position (for fall-animation)."""
+    r = size // 2 - 4
+    col = _candy_color(t)
+
+    # Kant
+    sdk.circle(img, cx - r, cy - r, r * 2, (20, 20, 20))
+
+    # Huvudkropp
+    sdk.circle(img, cx - r + 2, cy - r + 2, r * 2 - 4, col)
+
+    # Highlight
+    sdk.circle(img, cx - r + 6, cy - r + 6, 6, (255, 255, 255))
 
 
 # --- cell-ruta ---
@@ -138,6 +229,11 @@ class Game(sdk.GameBase):
         self.game_over = False
         self._timer_active = False
 
+        # Animationer
+        self._fade_out = {}           # {(r,c): start_time} - godisar som forsvinner
+        self._falling = {}            # {(r,c): (start_r, start_time)} - godisar som faller
+        self._new_candies = {}        # {(r,c): spawn_time} - nya godisar som dyker upp
+
     # ---- sparfil ----
     def state(self):
         return {
@@ -161,7 +257,6 @@ class Game(sdk.GameBase):
             self.board = [[-1] * COLS for _ in range(ROWS)]
         self.running = bool(d.get('running', False))
         self.game_over = bool(d.get('game_over', False))
-        # Starta inte timern automatiskt vid restore - den startas i on_tap('start')
 
     # ---- input ----
     def on_close(self):
@@ -240,6 +335,9 @@ class Game(sdk.GameBase):
         self.time_left = INIT_TIME    # 6000 cs = 60s
         self.processing = False
         self.dragging = None
+        self._fade_out.clear()
+        self._falling.clear()
+        self._new_candies.clear()
         self._fill_board()
         self._start_timer()
 
@@ -298,7 +396,7 @@ class Game(sdk.GameBase):
             self.log('KRASH _try_swap: %s' % e)
 
     def _cascade(self):
-        """Kör ett steg av cascade: hitta-matcha-rensa-gravitfyll."""
+        """Kor ett steg av cascade: hitta-matcha-rensa-gravitfyll."""
         try:
             matches = self._find_matches()
             if not matches:
@@ -312,7 +410,7 @@ class Game(sdk.GameBase):
             for cells in matches:
                 sz = len(cells)
                 if sz >= 4:
-                    # välj en godis att göra till special
+                    # valj en godis att gor till special
                     sr, sc = cells[sz // 2]
                     if sz >= 5:
                         # 5+ = bomb (type 12)
@@ -323,7 +421,7 @@ class Game(sdk.GameBase):
                 for (mr, mc) in cells:
                     cleared.add((mr, mc))
 
-            # hantera specialer från matchade celler
+            # hantera specialer fran matchade celler
             for (mr, mc) in list(cleared):
                 t = self.board[mr][mc]
                 if _is_special(t):
@@ -341,7 +439,7 @@ class Game(sdk.GameBase):
                                 if 0 <= nr < ROWS and 0 <= nc < COLS:
                                     cleared.add((nr, nc))
 
-            # beräkna poäng och tid
+            # berakna poang och tid
             points = len(cleared) * 10
             match_sizes = self._get_match_sizes(matches)
             time_gain = 0
@@ -352,7 +450,7 @@ class Game(sdk.GameBase):
                     time_gain += TIME_4
                 else:
                     time_gain += TIME_3
-            # bonus för specialer
+            # bonus for specialer
             has_special = any(_is_special(self.board[mr][mc]) for (mr, mc) in cleared)
             if has_special:
                 time_gain += TIME_SPECIAL
@@ -360,27 +458,32 @@ class Game(sdk.GameBase):
             self.time_left = min(self.time_left + time_gain, MAX_TIME)  # max 120s
             self.score += points
 
-            # rensa celler
+            # Starta fade-out animation
+            now = self.loop.time() / 1000.0
+            for (mr, mc) in cleared:
+                self._fade_out[(mr, mc)] = now
+
+            # Rensa celler
             for (mr, mc) in cleared:
                 self.board[mr][mc] = -1
 
-            # rita rensade
+            # Rita rensade
             cleared_rects = [_cell_rect(r, c) for (r, c) in cleared]
             self.invalidate(sdk.union(*cleared_rects))
 
-            # gravitation: låt godisar falla
-            self._apply_gravity()
+            # Gravitation: lat godisar falla
+            falling_cells = self._apply_gravity_with_animation(now)
 
-            # fyll tomrum
-            self._fill_gaps()
+            # Fyll tomrum med nya godisar fran ovan
+            self._fill_gaps_with_animation(now, falling_cells)
 
-            # rita brädet
+            # Rita bradets
             self.invalidate(BOARD)
             self.invalidate(SCORE)
             self.invalidate(TIME_BAR)
 
-            # nästa cascade-steg
-            self.later('cascade', 0.15, self._cascade)
+            # Nasta cascade-steg
+            self.later('cascade', 0.2, self._cascade)
         except Exception as e:
             self.log('KRASH cascade: %s' % e)
             self.processing = False
@@ -391,7 +494,7 @@ class Game(sdk.GameBase):
         return [len(m) for m in matches]
 
     def _apply_gravity(self):
-        """Låt godisar falla ner."""
+        """Lat godisar falla ner."""
         for c in range(COLS):
             write_pos = ROWS - 1
             for r in range(ROWS - 1, -1, -1):
@@ -401,12 +504,40 @@ class Game(sdk.GameBase):
             for r in range(write_pos, -1, -1):
                 self.board[r][c] = -1
 
+    def _apply_gravity_with_animation(self, now):
+        """Lat godisar falla ner med animation. Returnerar celler som faller."""
+        falling = []
+        for c in range(COLS):
+            write_pos = ROWS - 1
+            for r in range(ROWS - 1, -1, -1):
+                if self.board[r][c] >= 0:
+                    if write_pos != r:
+                        # Denna godis faller
+                        falling.append((write_pos, c, r, now))
+                    self.board[write_pos][c] = self.board[r][c]
+                    write_pos -= 1
+            for r in range(write_pos, -1, -1):
+                self.board[r][c] = -1
+        # Lagra fall-info
+        for (new_r, c, old_r, t) in falling:
+            self._falling[(new_r, c)] = (old_r, t)
+        return falling
+
     def _fill_gaps(self):
-        """Fyll tomma rutor med nya godisar."""
+        """Fyll tomma rutor med nya godisar fran ovan."""
         for c in range(COLS):
             for r in range(ROWS):
                 if self.board[r][c] < 0:
                     self.board[r][c] = self.rng.randrange(0, 6)
+
+    def _fill_gaps_with_animation(self, now, falling_cells):
+        """Fyll tomma rutor med nya godisar som faller fran ovan."""
+        for c in range(COLS):
+            for r in range(ROWS):
+                if self.board[r][c] < 0:
+                    self.board[r][c] = self.rng.randrange(0, 6)
+                    # Ny godis faller fran ovan (3 rutor over bradet)
+                    self._falling[(r, c)] = (r - 3, now)
 
     # ---- match-detektion ----
     def _find_matches(self):
@@ -442,7 +573,7 @@ class Game(sdk.GameBase):
 
     # ---- ritning ----
     def paint(self, img, rect):
-        # HUD: poäng
+        # HUD: poang
         if sdk.meets(rect, HUD):
             sdk.fill(img, HUD, sdk.CARD)
             sdk.text(img, PAD + 4, 114, 'Poang', 400, 22, sdk.MUTED)
@@ -466,21 +597,53 @@ class Game(sdk.GameBase):
             sdk.text(img, TIME_BAR_BG[0], TIME_BAR_BG[1] + 4, 'Tid', 400, 14, sdk.TEXT)
             sdk.text(img, TIME_BAR_BG[2], TIME_BAR_BG[1] + 4, '%.1f s' % (self.time_left / 100), 400, 14, sdk.TEXT, anchor='rs')
 
-        # Bräde
+        # Brade
         if sdk.meets(rect, BOARD):
             sdk.fill(img, sdk.clip(rect, BOARD), sdk.CARD)
+            now = self.loop.time() / 1000.0
+
             for r in range(ROWS):
                 for c in range(COLS):
                     t = self.board[r][c]
                     if not _is_clearable(t):
                         continue
+
                     cx, cy = _cell_center(r, c)
+
+                    # Kontrollera animationer
+                    is_fading = (r, c) in self._fade_out
+                    is_falling = (r, c) in self._falling
+
                     # Rita markerad godis med ljus bakgrund och gul kant
-                    if self.selected == (r, c):
+                    if self.selected == (r, c) and not is_fading:
                         sdk.fill(img, (BX + c * CELL, BY + r * CELL, BX + (c + 1) * CELL, BY + (r + 1) * CELL), (60, 60, 80))
                         r2 = CELL // 2 - 4
                         sdk.circle(img, cx - r2 - 2, cy - r2 - 2, (r2 + 2) * 2, sdk.YELLOW)
-                    if t == 10:  # radrensare
+
+                    # Bestam vilken funktion som ska anvandas
+                    if is_fading:
+                        fade_time = now - self._fade_out[(r, c)]
+                        if fade_time < FADE_DURATION:
+                            alpha = int(100 * (1 - fade_time / FADE_DURATION))
+                            _draw_fading_candy(img, cx, cy, t, CELL - 8, alpha)
+                        else:
+                            continue  # Klar att raderas
+                    elif is_falling:
+                        start_r, start_time = self._falling[(r, c)]
+                        fall_time = now - start_time
+                        if fall_time < FALL_DURATION:
+                            # Berakna nuvarande Y-position (ease-out)
+                            progress = fall_time / FALL_DURATION
+                            ease = 1 - (1 - progress) ** 3  # ease-out cubic
+                            dy = (start_r - r) * CELL * ease
+                            draw_cy = cy + dy
+                            # Rita godis pa flytande position
+                            _draw_candy_flying(img, cx, draw_cy, t, CELL - 8)
+                        else:
+                            # Klar att landa
+                            del self._falling[(r, c)]
+                            _draw_candy(img, cx, cy, t, CELL - 8)
+                    elif t == 10:  # radrensare
                         _draw_striped_h(img, cx, cy, t, CELL - 8)
                     elif t == 11:  # kolumnrensare
                         _draw_striped_v(img, cx, cy, t, CELL - 8)
@@ -489,7 +652,7 @@ class Game(sdk.GameBase):
                     else:
                         _draw_candy(img, cx, cy, t, CELL - 8)
 
-        # Startskärm / game over overlay
+        # Startskarm / game over overlay
         if not self.running or self.game_over:
             if sdk.meets(rect, OVERLAY):
                 sdk.fill(img, sdk.clip(rect, OVERLAY), sdk.BG)
