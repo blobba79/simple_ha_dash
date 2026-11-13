@@ -129,9 +129,7 @@ class Game(sdk.GameBase):
     def setup(self):
         self.best = 0
         self.board = [[-1] * COLS for _ in range(ROWS)]
-        self.dragging = None          # (r, c) om en godis dras
-        self.drag_pos = None          # (x, y)
-        self.swap_r1 = self.swap_c1 = self.swap_r2 = self.swap_c2 = None
+        self.selected = None          # vald godis (r, c) eller None
         self.processing = False       # blockerar input under cascade
         self.running = False
         self.score = 0
@@ -168,52 +166,78 @@ class Game(sdk.GameBase):
     def on_close(self):
         self.cancel('timer')
         self._timer_active = False
-        self.dragging = None
+        self.selected = None
         self.processing = False
 
     def targets(self):
         if not self.running or self.game_over:
             return [('start', OVERLAY)]
-        return []
+        # Alla godisar som targets
+        ts = []
+        for r in range(ROWS):
+            for c in range(COLS):
+                if _is_clearable(self.board[r][c]):
+                    ts.append(('c%d_%d' % (r, c), _cell_rect(r, c)))
+        return ts
 
     def on_tap(self, name):
-        if name == 'start':
-            if self.game_over or not self.running:
-                self._new_game()
-            self.save_soon()
-            self.invalidate()
+        try:
+            if name == 'start':
+                if self.game_over or not self.running:
+                    self._new_game()
+                self.save_soon()
+                self.invalidate()
+                return
+            # Om namnet är 'cR_C' så är det en godis som trycktes på
+            if name.startswith('c'):
+                parts = name[1:].split('_')
+                if len(parts) == 2:
+                    r, c = int(parts[0]), int(parts[1])
+                    self._tap_candy(r, c)
+        except Exception as e:
+            self.log('FEL on_tap: %s' % e)
 
     def on_down(self, x, y):
-        if not self.running or self.game_over or self.processing:
-            return
-        r = (y - BY) // CELL
-        c = (x - BX) // CELL
-        if 0 <= r < ROWS and 0 <= c < COLS and _is_clearable(self.board[r][c]):
-            self.dragging = (r, c)
-            self.drag_pos = (x, y)
+        pass
 
     def on_move(self, x, y):
-        if not self.dragging:
-            return
-        self.drag_pos = (x, y)
-        r = (y - BY) // CELL
-        c = (x - BX) // CELL
-        dr, dc = abs(r - self.dragging[0]), abs(c - self.dragging[1])
-        if (dr + dc == 1) and 0 <= r < ROWS and 0 <= c < COLS:
-            if _is_clearable(self.board[r][c]):
-                self.swap_r1, self.swap_c1 = self.dragging
-                self.swap_r2, self.swap_c2 = r, c
-                self.dragging = None
-                self._try_swap()
-                return
-        self.dragging = (r, c)
-        self.drag_pos = (x, y)
+        pass
 
     def on_up(self, x, y):
-        if self.dragging:
-            self.dragging = None
-            self.drag_pos = None
-        self.swap_r1 = self.swap_c1 = self.swap_r2 = self.swap_c2 = None
+        pass
+
+    def _tap_candy(self, r, c):
+        """Hantera tryck på en godis."""
+        if not self.running or self.game_over or self.processing:
+            return
+        if not (0 <= r < ROWS and 0 <= c < COLS):
+            return
+        if not _is_clearable(self.board[r][c]):
+            return
+
+        if self.selected is None:
+            # Välj första godisen
+            self.selected = (r, c)
+            self.invalidate(_cell_rect(r, c))
+        else:
+            sr, sc = self.selected
+            # Kolla om intilliggande
+            dr, dc = abs(r - sr), abs(c - sc)
+            if dr + dc == 1:
+                # Intilliggande - byt
+                self.swap_r1, self.swap_c1 = sr, sc
+                self.swap_r2, self.swap_c2 = r, c
+                self.selected = None
+                self._try_swap()
+            else:
+                # Inte intilliggande - välj ny istället
+                if self.selected == (r, c):
+                    # Samma godis - avvälja
+                    self.selected = None
+                    self.invalidate(_cell_rect(sr, sc))
+                else:
+                    self.selected = (r, c)
+                    self.invalidate(sdk.union(_cell_rect(sr, sc), _cell_rect(r, c)))
 
     # ---- nya spelet ----
     def _new_game(self):
@@ -450,30 +474,19 @@ class Game(sdk.GameBase):
                     if not _is_clearable(t):
                         continue
                     cx, cy = _cell_center(r, c)
+                    # Rita markerad godis med kant
+                    if self.selected == (r, c):
+                        sdk.bbox(img, BX + c * CELL + 2, BY + r * CELL + 2,
+                                 BX + (c + 1) * CELL - 2, BY + (r + 1) * CELL - 2,
+                                 12, (40, 40, 40), sdk.YELLOW, 3)
                     if t == 10:  # radrensare
-                        _draw_striped_h(img, cx, cy, t, CELL - 8)
+                        _draw_striped_h(img, cx, cy, t, CELL - 12)
                     elif t == 11:  # kolumnrensare
-                        _draw_striped_v(img, cx, cy, t, CELL - 8)
+                        _draw_striped_v(img, cx, cy, t, CELL - 12)
                     elif t == 12:  # bomb
-                        _draw_bomb(img, cx, cy, t, CELL - 8)
+                        _draw_bomb(img, cx, cy, t, CELL - 12)
                     else:
-                        _draw_candy(img, cx, cy, t, CELL - 8)
-
-            # drag-förhandsvisning
-            if self.dragging and self.drag_pos and not self.processing:
-                dr, dc = self.dragging
-                cx, cy = _cell_center(dr, dc)
-                dx = self.drag_pos[0] - cx
-                dy = self.drag_pos[1] - cy
-                alpha = 0.6
-                # rita den flyttade godisen med halvt transparens (genom att blanda färg)
-                t = self.board[dr][dc]
-                if t >= 0:
-                    col = _candy_color(t)
-                    bright = sdk.blend(col, (255, 255, 255), 0.3)
-                    sdk.circle(img, cx + sdk.snap(dx) - (CELL // 2 - 2),
-                               cy + sdk.snap(dy) - (CELL // 2 - 2),
-                               CELL - 4, bright)
+                        _draw_candy(img, cx, cy, t, CELL - 12)
 
         # Startskärm / game over overlay
         if not self.running or self.game_over:
