@@ -57,9 +57,9 @@ TIME_5 = 800                               # tid for 5-match
 TIME_SPECIAL = 1200                        # tid for special-match
 MAX_TIME = 12000                           # max 120s
 
-# --- animation ---
-FALL_DURATION = 0.4                        # 400ms for fall
-FADE_DURATION = 0.2                        # 200ms for fade out
+# --- animation (allt i millisekunder for loop.t) ---
+FALL_DURATION = 600                        # 600ms for fall
+FADE_DURATION = 300                        # 300ms for fade out
 
 
 def _candy_color(t):
@@ -193,15 +193,75 @@ def _draw_candy_flying(img, cx, cy, t, size):
     """Ritar en godis pa en godtycklig position (for fall-animation)."""
     r = size // 2 - 4
     col = _candy_color(t)
+    dark = (col[0] // 2, col[1] // 2, col[2] // 2)
+    light = tuple(min(255, c + 80) for c in col)
 
-    # Kant
-    sdk.circle(img, cx - r, cy - r, r * 2, (20, 20, 20))
+    # Yttre skugga
+    sdk.circle(img, cx - r + 2, cy - r + 2, r * 2, (0, 0, 0, 60))
+
+    # Botten (3D-effekt)
+    sdk.circle(img, cx - r + 1, cy - r + 1, r * 2, dark)
 
     # Huvudkropp
-    sdk.circle(img, cx - r + 2, cy - r + 2, r * 2 - 4, col)
+    sdk.circle(img, cx - r, cy - r, r * 2, col)
 
-    # Highlight
-    sdk.circle(img, cx - r + 6, cy - r + 6, 6, (255, 255, 255))
+    # Inre highlight (ovre kant)
+    sdk.circle(img, cx - r + 3, cy - r + 3, r * 2 - 6, light)
+
+    # Unika former per typ (samma som _draw_candy)
+    if t == 0:
+        sdk.circle(img, cx - 3, cy - 3, 6, (255, 255, 255))
+        sdk.circle(img, cx + 3, cy - 3, 6, (255, 255, 255))
+        sdk.circle(img, cx - 3, cy + 3, 6, (255, 255, 255))
+        sdk.circle(img, cx + 3, cy + 3, 6, (255, 255, 255))
+        sdk.circle(img, cx, cy, 6, (255, 255, 255))
+    elif t == 1:
+        sdk.circle(img, cx - 8, cy, 4, (255, 255, 255))
+        sdk.circle(img, cx - 4, cy - 4, 4, (255, 255, 255))
+        sdk.circle(img, cx, cy, 4, (255, 255, 255))
+        sdk.circle(img, cx + 4, cy + 4, 4, (255, 255, 255))
+        sdk.circle(img, cx + 8, cy, 4, (255, 255, 255))
+    elif t == 2:
+        sdk.circle(img, cx - 5, cy - 5, 5, (255, 255, 255))
+        sdk.circle(img, cx + 5, cy - 5, 5, (255, 255, 255))
+        sdk.circle(img, cx - 5, cy + 5, 5, (255, 255, 255))
+        sdk.circle(img, cx + 5, cy + 5, 5, (255, 255, 255))
+        sdk.circle(img, cx, cy, 4, (255, 255, 255))
+    elif t == 3:
+        sdk.circle(img, cx, cy - 8, 4, (255, 255, 255))
+        sdk.circle(img, cx, cy + 8, 4, (255, 255, 255))
+        sdk.circle(img, cx - 8, cy, 4, (255, 255, 255))
+        sdk.circle(img, cx + 8, cy, 4, (255, 255, 255))
+        sdk.circle(img, cx - 6, cy - 6, 4, (255, 255, 255))
+        sdk.circle(img, cx + 6, cy + 6, 4, (255, 255, 255))
+        sdk.circle(img, cx - 6, cy + 6, 4, (255, 255, 255))
+        sdk.circle(img, cx + 6, cy - 6, 4, (255, 255, 255))
+    elif t == 4:
+        sdk.circle(img, cx - 6, cy - 2, 5, (255, 255, 255))
+        sdk.circle(img, cx + 2, cy - 6, 5, (255, 255, 255))
+        sdk.circle(img, cx + 6, cy + 2, 5, (255, 255, 255))
+        sdk.circle(img, cx - 2, cy + 6, 5, (255, 255, 255))
+    elif t == 5:
+        sdk.circle(img, cx - 6, cy - 6, 4, (255, 255, 255))
+        sdk.circle(img, cx + 6, cy - 6, 4, (255, 255, 255))
+        sdk.circle(img, cx - 6, cy + 6, 4, (255, 255, 255))
+        sdk.circle(img, cx + 6, cy + 6, 4, (255, 255, 255))
+        sdk.circle(img, cx, cy, 4, (255, 255, 255))
+
+    # Specielldesign
+    if t == 10:
+        for dy in range(-r + 8, r - 6, 8):
+            sdk.circle(img, cx - 2, cy + dy, 3, (255, 255, 255))
+    elif t == 11:
+        for dx in range(-r + 8, r - 6, 8):
+            sdk.circle(img, cx + dx, cy - 2, 3, (255, 255, 255))
+    elif t == 12:
+        sdk.circle(img, cx - r + 1, cy - r + 1, r * 2, (40, 40, 40))
+        sdk.circle(img, cx - r + 3, cy - r + 3, r * 2 - 4, (60, 60, 60))
+        sdk.circle(img, cx - 6, cy - 6, 5, (255, 50, 50))
+        sdk.circle(img, cx + 6, cy + 6, 5, (255, 50, 50))
+        sdk.circle(img, cx + 6, cy - 6, 5, (255, 50, 50))
+        sdk.circle(img, cx - 6, cy + 6, 5, (255, 50, 50))
 
 
 # --- cell-ruta ---
@@ -459,7 +519,7 @@ class Game(sdk.GameBase):
             self.score += points
 
             # Starta fade-out animation
-            now = self.loop.time() / 1000.0
+            now = self.loop.time()
             for (mr, mc) in cleared:
                 self._fade_out[(mr, mc)] = now
 
@@ -485,8 +545,8 @@ class Game(sdk.GameBase):
             self.invalidate(SCORE)
             self.invalidate(TIME_BAR)
 
-            # Nasta cascade-steg
-            self.later('cascade', 0.2, self._cascade)
+            # Nasta cascade-steg - vanta pa animation
+            self.later('cascade', FALL_DURATION + 50, self._cascade)
         except Exception as e:
             self.log('KRASH cascade: %s' % e)
             self.processing = False
@@ -605,7 +665,7 @@ class Game(sdk.GameBase):
         # Brade
         if sdk.meets(rect, BOARD):
             sdk.fill(img, sdk.clip(rect, BOARD), sdk.CARD)
-            now = self.loop.time() / 1000.0
+            now = self.loop.time()
 
             for r in range(ROWS):
                 for c in range(COLS):
@@ -631,9 +691,12 @@ class Game(sdk.GameBase):
                         if fade_time < FADE_DURATION:
                             alpha = int(100 * (1 - fade_time / FADE_DURATION))
                             _draw_fading_candy(img, cx, cy, t, CELL - 8, alpha)
+                            continue  # Animering pagaende, hoppa over resten
                         else:
-                            continue  # Klar att raderas
-                    elif is_falling:
+                            del self._fade_out[(r, c)]
+                            # Fade klar, kolla fall-animation nedan
+
+                    if is_falling:
                         start_r, start_time = self._falling[(r, c)]
                         fall_time = now - start_time
                         if fall_time < FALL_DURATION:
@@ -641,13 +704,14 @@ class Game(sdk.GameBase):
                             progress = fall_time / FALL_DURATION
                             ease = 1 - (1 - progress) ** 3  # ease-out cubic
                             # Interpolera fran start till mal
-                            draw_cy = int(start_r * CELL + CELL // 2 + (r - start_r) * CELL * ease)
+                            draw_cy = int(BY + start_r * CELL + CELL // 2 + (r - start_r) * CELL * ease)
                             # Rita godis pa flytande position
                             _draw_candy_flying(img, cx, draw_cy, t, CELL - 8)
+                            continue  # Animering pagaende
                         else:
                             # Klar att landa
                             del self._falling[(r, c)]
-                            _draw_candy(img, cx, cy, t, CELL - 8)
+                            # Fortsatt till normal ritning nedan
                     elif t == 10:  # radrensare
                         _draw_striped_h(img, cx, cy, t, CELL - 8)
                     elif t == 11:  # kolumnrensare
