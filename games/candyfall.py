@@ -89,99 +89,34 @@ def _is_clearable(t):
 # Ritning av snyggare godisar med unika former
 # ================================================================
 def _draw_candy(img, cx, cy, t, size):
-    """Ritar en godis med unik form baserad pa typ."""
-    r = size // 2 - 4
+    """Ritar en enkel godis - färg + form per typ."""
+    r = size // 2 - 2
     col = _candy_color(t)
-    dark = (col[0] // 2, col[1] // 2, col[2] // 2)
-    light = tuple(min(255, c + 80) for c in col)
 
-    # Yttre skugga
-    sdk.circle(img, cx - r + 2, cy - r + 2, r * 2, (0, 0, 0, 60))
-
-    # Botten (3D-effekt)
-    sdk.circle(img, cx - r + 1, cy - r + 1, r * 2, dark)
-
-    # Huvudkropp
+    # Enkel cirkel med kant
+    sdk.circle(img, cx - r - 1, cy - r - 1, (r + 1) * 2, (30, 30, 30))
     sdk.circle(img, cx - r, cy - r, r * 2, col)
-
-    # Inre highlight (ovre kant)
-    sdk.circle(img, cx - r + 3, cy - r + 3, r * 2 - 6, light)
-
-    # Unika former per typ - SOLIDA former utan prickar
-    if t == 0:
-        # Rod - KVADRAT (fyll med cirklar)
-        for dy in range(-18, 19, 8):
-            for dx in range(-18, 19, 8):
-                sdk.circle(img, cx + dx, cy + dy, 8, col)
-    elif t == 1:
-        # Bla - TRIANGUL (pekar upp)
-        for row in range(3):
-            y = cy - 18 + row * 12
-            w = 6 + row * 8
-            for dx in range(-w, w + 1, 8):
-                sdk.circle(img, cx + dx, y, 7, col)
-    elif t == 2:
-        # Grön - DIAMANT
-        for row in range(5):
-            y = cy - 18 + row * 9
-            w = 4 + row * 4 if row < 3 else 12 - row * 4
-            for dx in range(-w, w + 1, 8):
-                sdk.circle(img, cx + dx, y, 7, col)
-    elif t == 3:
-        # Gul - STJÄRNA (5 punkter)
-        for i in range(10):
-            angle = i * 3.14159 / 5 - 3.14159 / 2
-            rad = 18 if i % 2 == 0 else 9
-            sx = cx + int(rad * 0.7 * 1.41)
-            sy = cy + int(rad * 0.7 * 1.41)
-            sdk.circle(img, sx, sy, 10, col)
-        sdk.circle(img, cx, cy, 10, col)
-    elif t == 4:
-        # Lila - HALVCIRKEL (öppning nedan)
-        for dy in range(-18, 2):
-            for dx in range(-18, 19):
-                if dx * dx + dy * dy <= 18 * 18:
-                    sdk.circle(img, cx + dx, cy + dy, 7, col)
-    elif t == 5:
-        # Orange - KORS
-        for dy in range(-18, 19, 8):
-            for dx in range(-18, 19, 8):
-                if abs(dx) <= 6 or abs(dy) <= 6:
-                    sdk.circle(img, cx + dx, cy + dy, 7, col)
 
     # Specielldesign
     if t == 10:
-        # Radrensare - horisontella streck
-        for dx in range(-18, 19, 8):
-            sdk.circle(img, cx + dx, cy - 6, 5, (255, 255, 255))
-            sdk.circle(img, cx + dx, cy + 6, 5, (255, 255, 255))
+        # Radrensare - vit kant
+        sdk.circle(img, cx - r - 2, cy - r - 2, (r + 2) * 2, (255, 255, 255))
     elif t == 11:
-        # Kolumnrensare - vertikala streck
-        for dy in range(-18, 19, 8):
-            sdk.circle(img, cx - 6, cy + dy, 5, (255, 255, 255))
-            sdk.circle(img, cx + 6, cy + dy, 5, (255, 255, 255))
+        # Kolumnrensare - dubbel kant
+        sdk.circle(img, cx - r - 3, cy - r - 3, (r + 3) * 2, (100, 255, 100))
+        sdk.circle(img, cx - r, cy - r, r * 2, col)
     elif t == 12:
-        # Bomb - mörk med rött X
-        sdk.circle(img, cx - r + 1, cy - r + 1, r * 2, (40, 40, 40))
-        sdk.circle(img, cx - r + 3, cy - r + 3, r * 2 - 4, (60, 60, 60))
-        for i in range(-1, 2):
-            sdk.circle(img, cx + i * 8, cy + i * 8, 5, (255, 50, 50))
-            sdk.circle(img, cx - i * 8, cy + i * 8, 5, (255, 50, 50))
+        # Bomb - svart med röd kant
+        sdk.circle(img, cx - r, cy - r, r * 2, (50, 50, 50))
+        sdk.circle(img, cx - r - 2, cy - r - 2, (r + 2) * 2, (255, 50, 50))
 
 
 def _draw_fading_candy(img, cx, cy, t, size, alpha):
     """Ritar en godis med genomskinlighet for fade-out-effekt."""
-    r = size // 2 - 4
+    r = size // 2 - 2
     col = _candy_color(t)
 
-    # Kant
-    sdk.circle(img, cx - r, cy - r, r * 2, (20, 20, 20))
-
-    # Huvudkropp
-    sdk.circle(img, cx - r + 2, cy - r + 2, r * 2 - 4, col)
-
-    # Highlight
-    sdk.circle(img, cx - r + 6, cy - r + 6, 6, (255, 255, 255))
+    sdk.circle(img, cx - r, cy - r, r * 2, col)
 
 
 # --- cell-ruta ---
