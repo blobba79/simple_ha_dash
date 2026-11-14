@@ -108,41 +108,46 @@ def _draw_candy(img, cx, cy, t, size):
     # Inre highlight (ovre kant)
     sdk.circle(img, cx - r + 3, cy - r + 3, r * 2 - 6, light)
 
-    # Unika former per typ - MER DISTINKTA
+    # Unika former per typ - STORA, MYCKET TYDLIGA former
     if t == 0:
-        # Rod - KORS (tydligt X-mønster)
-        sdk.circle(img, cx - 6, cy - 6, 5, (255, 255, 255))
-        sdk.circle(img, cx + 6, cy + 6, 5, (255, 255, 255))
-        sdk.circle(img, cx - 6, cy + 6, 5, (255, 255, 255))
-        sdk.circle(img, cx + 6, cy - 6, 5, (255, 255, 255))
+        # Rod - STORT KORS (5 prickar: mitt + 4 armar)
+        sdk.circle(img, cx, cy, 12, (255, 255, 255))
+        sdk.circle(img, cx, cy - 16, 7, (255, 255, 255))
+        sdk.circle(img, cx, cy + 16, 7, (255, 255, 255))
+        sdk.circle(img, cx - 16, cy, 7, (255, 255, 255))
+        sdk.circle(img, cx + 16, cy, 7, (255, 255, 255))
     elif t == 1:
-        # Blå - CIGARR (två horisontella streck)
-        sdk.circle(img, cx - 8, cy, 5, (255, 255, 255))
-        sdk.circle(img, cx, cy, 5, (255, 255, 255))
-        sdk.circle(img, cx + 8, cy, 5, (255, 255, 255))
+        # Blå - HORISONTELL LINJE (3 stora prickar)
+        sdk.circle(img, cx, cy, 12, (255, 255, 255))
+        sdk.circle(img, cx - 16, cy, 8, (255, 255, 255))
+        sdk.circle(img, cx + 16, cy, 8, (255, 255, 255))
     elif t == 2:
-        # Grön - TRIANGUL (upp-och-ned triangul)
-        sdk.circle(img, cx, cy - 7, 5, (255, 255, 255))
-        sdk.circle(img, cx - 6, cy + 5, 5, (255, 255, 255))
-        sdk.circle(img, cx + 6, cy + 5, 5, (255, 255, 255))
+        # Grön - TRIANGUL (4 prickar: topp + bas + mitt)
+        sdk.circle(img, cx, cy, 12, (255, 255, 255))
+        sdk.circle(img, cx, cy - 16, 8, (255, 255, 255))
+        sdk.circle(img, cx - 14, cy + 12, 8, (255, 255, 255))
+        sdk.circle(img, cx + 14, cy + 12, 8, (255, 255, 255))
     elif t == 3:
-        # Gul - DIAMANT (romb i mitten)
-        sdk.circle(img, cx, cy - 7, 5, (255, 255, 255))
-        sdk.circle(img, cx - 7, cy, 5, (255, 255, 255))
-        sdk.circle(img, cx, cy + 7, 5, (255, 255, 255))
-        sdk.circle(img, cx + 7, cy, 5, (255, 255, 255))
+        # Gul - DIAMANT (5 prickar: mitt + 4 hörn)
+        sdk.circle(img, cx, cy, 12, (255, 255, 255))
+        sdk.circle(img, cx, cy - 16, 7, (255, 255, 255))
+        sdk.circle(img, cx - 16, cy, 7, (255, 255, 255))
+        sdk.circle(img, cx, cy + 16, 7, (255, 255, 255))
+        sdk.circle(img, cx + 16, cy, 7, (255, 255, 255))
     elif t == 4:
-        # Lila - HALVMÅNE (C-form)
-        sdk.circle(img, cx - 5, cy - 5, 5, (255, 255, 255))
-        sdk.circle(img, cx - 5, cy + 5, 5, (255, 255, 255))
-        sdk.circle(img, cx + 5, cy, 5, (255, 255, 255))
+        # Lila - HALVMÅNE/C-FORM (4 prickar)
+        sdk.circle(img, cx, cy, 12, (255, 255, 255))
+        sdk.circle(img, cx - 12, cy - 12, 7, (255, 255, 255))
+        sdk.circle(img, cx - 12, cy + 12, 7, (255, 255, 255))
+        sdk.circle(img, cx + 12, cy, 7, (255, 255, 255))
     elif t == 5:
-        # Orange - STJÄRNA (5 punkter)
-        sdk.circle(img, cx, cy - 7, 4, (255, 255, 255))
-        sdk.circle(img, cx + 7, cy, 4, (255, 255, 255))
-        sdk.circle(img, cx, cy + 7, 4, (255, 255, 255))
-        sdk.circle(img, cx - 7, cy, 4, (255, 255, 255))
-        sdk.circle(img, cx, cy, 4, (255, 255, 255))
+        # Orange - STJÄRNA (6 prickar: mitt + 5 i cirkel)
+        sdk.circle(img, cx, cy, 12, (255, 255, 255))
+        sdk.circle(img, cx, cy - 16, 6, (255, 255, 255))
+        sdk.circle(img, cx + 15, cy - 5, 6, (255, 255, 255))
+        sdk.circle(img, cx + 9, cy + 14, 6, (255, 255, 255))
+        sdk.circle(img, cx - 9, cy + 14, 6, (255, 255, 255))
+        sdk.circle(img, cx - 15, cy - 5, 6, (255, 255, 255))
 
     # Specielldesign
     if t == 10:
@@ -198,41 +203,46 @@ def _draw_candy_flying(img, cx, cy, t, size):
     # Inre highlight (ovre kant)
     sdk.circle(img, cx - r + 3, cy - r + 3, r * 2 - 6, light)
 
-    # Unika former per typ (SAMMA som _draw_candy)
+    # Unika former per typ (SAMMA som _draw_candy - STORA former)
     if t == 0:
-        # Rod - KORS
-        sdk.circle(img, cx - 6, cy - 6, 5, (255, 255, 255))
-        sdk.circle(img, cx + 6, cy + 6, 5, (255, 255, 255))
-        sdk.circle(img, cx - 6, cy + 6, 5, (255, 255, 255))
-        sdk.circle(img, cx + 6, cy - 6, 5, (255, 255, 255))
+        # Rod - STORT KORS
+        sdk.circle(img, cx, cy, 12, (255, 255, 255))
+        sdk.circle(img, cx, cy - 16, 7, (255, 255, 255))
+        sdk.circle(img, cx, cy + 16, 7, (255, 255, 255))
+        sdk.circle(img, cx - 16, cy, 7, (255, 255, 255))
+        sdk.circle(img, cx + 16, cy, 7, (255, 255, 255))
     elif t == 1:
-        # Blå - CIGARR
-        sdk.circle(img, cx - 8, cy, 5, (255, 255, 255))
-        sdk.circle(img, cx, cy, 5, (255, 255, 255))
-        sdk.circle(img, cx + 8, cy, 5, (255, 255, 255))
+        # Blå - HORISONTELL LINJE
+        sdk.circle(img, cx, cy, 12, (255, 255, 255))
+        sdk.circle(img, cx - 16, cy, 8, (255, 255, 255))
+        sdk.circle(img, cx + 16, cy, 8, (255, 255, 255))
     elif t == 2:
         # Grön - TRIANGUL
-        sdk.circle(img, cx, cy - 7, 5, (255, 255, 255))
-        sdk.circle(img, cx - 6, cy + 5, 5, (255, 255, 255))
-        sdk.circle(img, cx + 6, cy + 5, 5, (255, 255, 255))
+        sdk.circle(img, cx, cy, 12, (255, 255, 255))
+        sdk.circle(img, cx, cy - 16, 8, (255, 255, 255))
+        sdk.circle(img, cx - 14, cy + 12, 8, (255, 255, 255))
+        sdk.circle(img, cx + 14, cy + 12, 8, (255, 255, 255))
     elif t == 3:
         # Gul - DIAMANT
-        sdk.circle(img, cx, cy - 7, 5, (255, 255, 255))
-        sdk.circle(img, cx - 7, cy, 5, (255, 255, 255))
-        sdk.circle(img, cx, cy + 7, 5, (255, 255, 255))
-        sdk.circle(img, cx + 7, cy, 5, (255, 255, 255))
+        sdk.circle(img, cx, cy, 12, (255, 255, 255))
+        sdk.circle(img, cx, cy - 16, 7, (255, 255, 255))
+        sdk.circle(img, cx - 16, cy, 7, (255, 255, 255))
+        sdk.circle(img, cx, cy + 16, 7, (255, 255, 255))
+        sdk.circle(img, cx + 16, cy, 7, (255, 255, 255))
     elif t == 4:
         # Lila - HALVMÅNE
-        sdk.circle(img, cx - 5, cy - 5, 5, (255, 255, 255))
-        sdk.circle(img, cx - 5, cy + 5, 5, (255, 255, 255))
-        sdk.circle(img, cx + 5, cy, 5, (255, 255, 255))
+        sdk.circle(img, cx, cy, 12, (255, 255, 255))
+        sdk.circle(img, cx - 12, cy - 12, 7, (255, 255, 255))
+        sdk.circle(img, cx - 12, cy + 12, 7, (255, 255, 255))
+        sdk.circle(img, cx + 12, cy, 7, (255, 255, 255))
     elif t == 5:
         # Orange - STJÄRNA
-        sdk.circle(img, cx, cy - 7, 4, (255, 255, 255))
-        sdk.circle(img, cx + 7, cy, 4, (255, 255, 255))
-        sdk.circle(img, cx, cy + 7, 4, (255, 255, 255))
-        sdk.circle(img, cx - 7, cy, 4, (255, 255, 255))
-        sdk.circle(img, cx, cy, 4, (255, 255, 255))
+        sdk.circle(img, cx, cy, 12, (255, 255, 255))
+        sdk.circle(img, cx, cy - 16, 6, (255, 255, 255))
+        sdk.circle(img, cx + 15, cy - 5, 6, (255, 255, 255))
+        sdk.circle(img, cx + 9, cy + 14, 6, (255, 255, 255))
+        sdk.circle(img, cx - 9, cy + 14, 6, (255, 255, 255))
+        sdk.circle(img, cx - 15, cy - 5, 6, (255, 255, 255))
 
     # Specielldesign
     if t == 10:
@@ -444,9 +454,12 @@ class Game(sdk.GameBase):
     def _cascade(self):
         """Kor ett steg av cascade: hitta-matcha-rensa-gravitfyll."""
         try:
-            # Animationerna ska vara klara efter 650ms - rensa eventuella gamla poster
-            self._fade_out.clear()
-            self._falling.clear()
+            # Rensa bara animationer som är klara (inte de som fortfarande pågår)
+            now = self.loop.time()
+            self._fade_out = {k: v for k, v in self._fade_out.items()
+                              if now - v < FADE_DURATION}
+            self._falling = {k: v for k, v in self._falling.items()
+                             if now - v[1] < FALL_DURATION}
 
             matches = self._find_matches()
             if not matches:
@@ -617,8 +630,8 @@ class Game(sdk.GameBase):
             for r in range(ROWS):
                 if self.board[r][c] < 0:
                     self.board[r][c] = self.rng.randrange(0, 6)
-                    # Ny godis faller fran ovan (3 rutor over bradet)
-                    self._falling[(r, c)] = (r - 3, now)
+                    # Ny godis faller fran ovan (1 ruta over for kortare animation)
+                    self._falling[(r, c)] = (max(0, r - 1), now)
 
     # ---- match-detektion ----
     def _find_matches(self, board=None):
