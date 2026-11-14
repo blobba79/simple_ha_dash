@@ -51,11 +51,11 @@ SPECIAL_COLORS = [
 # --- tid (allt i centisekunder = heltal) ---
 INIT_TIME = 6000                           # starttid (60s * 100)
 DRAIN = 100                                # centisekunder per sekund
-TIME_3 = 200                               # tid for 3-match
-TIME_4 = 400                               # tid for 4-match
-TIME_5 = 800                               # tid for 5-match
-TIME_SPECIAL = 1200                        # tid for special-match
-MAX_TIME = 12000                           # max 120s
+TIME_3 = 100                               # tid for 3-match (1s)
+TIME_4 = 150                               # tid for 4-match (1.5s)
+TIME_5 = 200                               # tid for 5-match (2s)
+TIME_SPECIAL = 100                         # tid for special-match (1s)
+MAX_TIME = 9000                            # max 90s
 
 # --- animation (allt i millisekunder for loop.t) ---
 FALL_DURATION = 600                        # 600ms for fall
@@ -458,6 +458,10 @@ class Game(sdk.GameBase):
     def _cascade(self):
         """Kor ett steg av cascade: hitta-matcha-rensa-gravitfyll."""
         try:
+            # Animationerna ska vara klara efter 650ms - rensa eventuella gamla poster
+            self._fade_out.clear()
+            self._falling.clear()
+
             matches = self._find_matches()
             if not matches:
                 self.processing = False
@@ -481,23 +485,32 @@ class Game(sdk.GameBase):
                 for (mr, mc) in cells:
                     cleared.add((mr, mc))
 
-            # hantera specialer fran matchade celler
-            for (mr, mc) in list(cleared):
-                t = self.board[mr][mc]
-                if _is_special(t):
-                    st = _special_type(t)
-                    if st == 0:  # radrensare
-                        for cc in range(COLS):
-                            cleared.add((mr, cc))
-                    elif st == 1:  # kolumnrensare
-                        for rr in range(ROWS):
-                            cleared.add((rr, mc))
-                    elif st == 2:  # bomb
-                        for dr in range(-1, 2):
-                            for dc in range(-1, 2):
-                                nr, nc = mr + dr, mc + dc
-                                if 0 <= nr < ROWS and 0 <= nc < COLS:
-                                    cleared.add((nr, nc))
+            # hantera specialer fran matchade celler (iterativt)
+            changed = True
+            while changed:
+                changed = False
+                for (mr, mc) in list(cleared):
+                    t = self.board[mr][mc]
+                    if _is_special(t):
+                        st = _special_type(t)
+                        if st == 0:  # radrensare
+                            for cc in range(COLS):
+                                if (mr, cc) not in cleared:
+                                    cleared.add((mr, cc))
+                                    changed = True
+                        elif st == 1:  # kolumnrensare
+                            for rr in range(ROWS):
+                                if (rr, mc) not in cleared:
+                                    cleared.add((rr, mc))
+                                    changed = True
+                        elif st == 2:  # bomb
+                            for dr in range(-1, 2):
+                                for dc in range(-1, 2):
+                                    nr, nc = mr + dr, mc + dc
+                                    if 0 <= nr < ROWS and 0 <= nc < COLS:
+                                        if (nr, nc) not in cleared:
+                                            cleared.add((nr, nc))
+                                            changed = True
 
             # berakna poang och tid
             points = len(cleared) * 10
@@ -515,7 +528,7 @@ class Game(sdk.GameBase):
             if has_special:
                 time_gain += TIME_SPECIAL
 
-            self.time_left = min(self.time_left + time_gain, MAX_TIME)  # max 120s
+            self.time_left = min(self.time_left + time_gain, MAX_TIME)  # max
             self.score += points
 
             # Starta fade-out animation
@@ -689,14 +702,16 @@ class Game(sdk.GameBase):
             for r in range(ROWS):
                 for c in range(COLS):
                     t = self.board[r][c]
-                    if not _is_clearable(t):
-                        continue
 
                     cx, cy = _cell_center(r, c)
 
-                    # Kontrollera animationer
+                    # Kontrollera animationer (FADE MASTE KOLLAS FORST - oavsett om t ar -1)
                     is_fading = (r, c) in self._fade_out
                     is_falling = (r, c) in self._falling
+
+                    # Om ej klarbar och ingen animation, hoppa over
+                    if not _is_clearable(t) and not is_fading and not is_falling:
+                        continue
 
                     # Rita markerad godis med ljus bakgrund och gul kant
                     if self.selected == (r, c) and not is_fading:
@@ -733,14 +748,7 @@ class Game(sdk.GameBase):
                             # Fall through to normal drawing below
 
                     # Normal ritning (efter animation eller ingen animation)
-                    if t == 10:  # radrensare
-                        _draw_striped_h(img, cx, cy, t, CELL - 8)
-                    elif t == 11:  # kolumnrensare
-                        _draw_striped_v(img, cx, cy, t, CELL - 8)
-                    elif t == 12:  # bomb
-                        _draw_bomb(img, cx, cy, t, CELL - 8)
-                    else:
-                        _draw_candy(img, cx, cy, t, CELL - 8)
+                    _draw_candy(img, cx, cy, t, CELL - 8)
 
         # Startskarm / game over overlay
         if not self.running or self.game_over:
