@@ -26,6 +26,9 @@ TIME_BAR = (PAD, 124, 1024 - PAD, 144)
 TIME_BAR_BG = (PAD + 4, 128, 1024 - PAD - 4, 140)
 SCORE = (PAD, 128, 300, 152)
 
+# Starta om-knapp
+RESTART = (920, 128, 1008, 152)
+
 # Overlay / start-knapp
 OVERLAY = (262, 160, 762, 440)
 START = (380, 340, 644, 400)
@@ -181,7 +184,7 @@ class Game(sdk.GameBase):
     def targets(self):
         if not self.running or self.game_over:
             return [('start', OVERLAY)]
-        return []
+        return [('restart', RESTART)]
 
     def on_tap(self, name):
         if name == 'start':
@@ -189,6 +192,12 @@ class Game(sdk.GameBase):
                 self._new_game()
             self.save_soon()
             self.invalidate()
+            return
+        if name == 'restart':
+            if self.running and not self.game_over:
+                self._new_game()
+                self.save_soon()
+                self.invalidate()
             return
         if len(name) >= 3 and name[0] == 'c':
             try:
@@ -498,6 +507,10 @@ class Game(sdk.GameBase):
             # text
             sdk.text(img, TIME_BAR_BG[0], TIME_BAR_BG[1] + 4, 'Tid', 400, 14, sdk.TEXT)
             sdk.text(img, TIME_BAR_BG[2], TIME_BAR_BG[1] + 4, '%.1f s' % (self.time_left / 100), 400, 14, sdk.TEXT, anchor='rs')
+
+        # Starta om-knapp
+        if sdk.meets(rect, RESTART):
+            sdk.button(img, RESTART, '↻ Om', 'normal', self.pressed == 'restart', size=20)
 
         # Brade
         if sdk.meets(rect, BOARD):
