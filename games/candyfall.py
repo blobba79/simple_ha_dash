@@ -58,8 +58,8 @@ TIME_SPECIAL = 1200                        # tid for special-match
 MAX_TIME = 12000                           # max 120s
 
 # --- animation ---
-FALL_DURATION = 0.25                       # 250ms for fall
-FADE_DURATION = 0.15                       # 150ms for fade out
+FALL_DURATION = 0.4                        # 400ms for fall
+FADE_DURATION = 0.2                        # 200ms for fade out
 
 
 def _candy_color(t):
@@ -87,91 +87,91 @@ def _is_clearable(t):
 
 
 # ================================================================
-# Ritning av snyggare godisar
+# Ritning av snyggare godisar med unika former
 # ================================================================
 def _draw_candy(img, cx, cy, t, size):
-    """Ritar en snygg godis med 3D-effekt, highlight och skugga."""
+    """Ritar en godis med unik form baserad pa typ."""
     r = size // 2 - 4
     col = _candy_color(t)
+    dark = (col[0] // 2, col[1] // 2, col[2] // 2)
+    light = tuple(min(255, c + 80) for c in col)
 
-    # Yttre kant (mork ram)
-    sdk.circle(img, cx - r, cy - r, r * 2, (20, 20, 20))
+    # Yttre skugga
+    sdk.circle(img, cx - r + 2, cy - r + 2, r * 2, (0, 0, 0, 60))
+
+    # Botten (3D-effekt)
+    sdk.circle(img, cx - r + 1, cy - r + 1, r * 2, dark)
 
     # Huvudkropp
-    sdk.circle(img, cx - r + 2, cy - r + 2, r * 2 - 4, col)
+    sdk.circle(img, cx - r, cy - r, r * 2, col)
 
-    # Highlight (ovre vstra) - liten vit fläck
-    sdk.circle(img, cx - r + 6, cy - r + 6, 6, (255, 255, 255))
+    # Inre highlight (ovre kant)
+    sdk.circle(img, cx - r + 3, cy - r + 3, r * 2 - 6, light)
 
+    # Unika former per typ
+    if t == 0:
+        # Rod - stjärna i mitten
+        sdk.circle(img, cx - 3, cy - 3, 6, (255, 255, 255))
+        sdk.circle(img, cx + 3, cy - 3, 6, (255, 255, 255))
+        sdk.circle(img, cx - 3, cy + 3, 6, (255, 255, 255))
+        sdk.circle(img, cx + 3, cy + 3, 6, (255, 255, 255))
+        sdk.circle(img, cx, cy, 6, (255, 255, 255))
+    elif t == 1:
+        # Blå - våglinje
+        sdk.circle(img, cx - 8, cy, 4, (255, 255, 255))
+        sdk.circle(img, cx - 4, cy - 4, 4, (255, 255, 255))
+        sdk.circle(img, cx, cy, 4, (255, 255, 255))
+        sdk.circle(img, cx + 4, cy + 4, 4, (255, 255, 255))
+        sdk.circle(img, cx + 8, cy, 4, (255, 255, 255))
+    elif t == 2:
+        # Grön - blad/klöver
+        sdk.circle(img, cx - 5, cy - 5, 5, (255, 255, 255))
+        sdk.circle(img, cx + 5, cy - 5, 5, (255, 255, 255))
+        sdk.circle(img, cx - 5, cy + 5, 5, (255, 255, 255))
+        sdk.circle(img, cx + 5, cy + 5, 5, (255, 255, 255))
+        sdk.circle(img, cx, cy, 4, (255, 255, 255))
+    elif t == 3:
+        # Gul - solstralar
+        sdk.circle(img, cx, cy - 8, 4, (255, 255, 255))
+        sdk.circle(img, cx, cy + 8, 4, (255, 255, 255))
+        sdk.circle(img, cx - 8, cy, 4, (255, 255, 255))
+        sdk.circle(img, cx + 8, cy, 4, (255, 255, 255))
+        sdk.circle(img, cx - 6, cy - 6, 4, (255, 255, 255))
+        sdk.circle(img, cx + 6, cy + 6, 4, (255, 255, 255))
+        sdk.circle(img, cx - 6, cy + 6, 4, (255, 255, 255))
+        sdk.circle(img, cx + 6, cy - 6, 4, (255, 255, 255))
+    elif t == 4:
+        # Lila - virvel
+        sdk.circle(img, cx - 6, cy - 2, 5, (255, 255, 255))
+        sdk.circle(img, cx + 2, cy - 6, 5, (255, 255, 255))
+        sdk.circle(img, cx + 6, cy + 2, 5, (255, 255, 255))
+        sdk.circle(img, cx - 2, cy + 6, 5, (255, 255, 255))
+    elif t == 5:
+        # Orange - prickar
+        sdk.circle(img, cx - 6, cy - 6, 4, (255, 255, 255))
+        sdk.circle(img, cx + 6, cy - 6, 4, (255, 255, 255))
+        sdk.circle(img, cx - 6, cy + 6, 4, (255, 255, 255))
+        sdk.circle(img, cx + 6, cy + 6, 4, (255, 255, 255))
+        sdk.circle(img, cx, cy, 4, (255, 255, 255))
 
-def _draw_striped_h(img, cx, cy, t, size):
-    """Radrensare - horisontella strimor."""
-    r = size // 2 - 4
-    col = _candy_color(t)
-
-    # Kant
-    sdk.circle(img, cx - r, cy - r, r * 2, (20, 20, 20))
-
-    # Huvudkropp
-    sdk.circle(img, cx - r + 2, cy - r + 2, r * 2 - 4, col)
-
-    # Strimor
-    for dy in range(-r + 6, r - 4, 10):
-        sdk.circle(img, cx - 2, cy + dy - 1, 4, (255, 255, 255))
-
-    # Highlight
-    sdk.circle(img, cx - r + 6, cy - r + 6, 6, (255, 255, 255))
-
-    # Pil-ikoner (horisontell)
-    sdk.circle(img, cx - 12, cy - 4, 6, (255, 255, 255))
-    sdk.circle(img, cx + 10, cy - 4, 6, (255, 255, 255))
-
-
-def _draw_striped_v(img, cx, cy, t, size):
-    """Kolumnrensare - vertikala strimor."""
-    r = size // 2 - 4
-    col = _candy_color(t)
-
-    # Kant
-    sdk.circle(img, cx - r, cy - r, r * 2, (20, 20, 20))
-
-    # Huvudkropp
-    sdk.circle(img, cx - r + 2, cy - r + 2, r * 2 - 4, col)
-
-    # Strimor
-    for dx in range(-r + 6, r - 4, 10):
-        sdk.circle(img, cx + dx - 1, cy - 2, 4, (255, 255, 255))
-
-    # Highlight
-    sdk.circle(img, cx - r + 6, cy - r + 6, 6, (255, 255, 255))
-
-    # Pil-ikoner (vertikal)
-    sdk.circle(img, cx - 4, cy - 12, 6, (255, 255, 255))
-    sdk.circle(img, cx - 4, cy + 10, 6, (255, 255, 255))
-
-
-def _draw_bomb(img, cx, cy, t, size):
-    """Bomb - 3x3 rensare med pulserande effekt."""
-    r = size // 2 - 4
-    col = _candy_color(t)
-
-    # Kant
-    sdk.circle(img, cx - r, cy - r, r * 2, (20, 20, 20))
-
-    # Huvudkropp (morkare)
-    sdk.circle(img, cx - r + 2, cy - r + 2, r * 2 - 4, (col[0] // 2, col[1] // 2, col[2] // 2))
-
-    # Inre cirkel
-    sdk.circle(img, cx - r + 6, cy - r + 6, (r - 6) * 2, col)
-
-    # X-mark
-    sdk.circle(img, cx - 8, cy - 8, 4, (255, 255, 255))
-    sdk.circle(img, cx + 6, cy - 8, 4, (255, 255, 255))
-    sdk.circle(img, cx - 8, cy + 6, 4, (255, 255, 255))
-    sdk.circle(img, cx + 6, cy + 6, 4, (255, 255, 255))
-
-    # Highlight
-    sdk.circle(img, cx - r + 6, cy - r + 6, 6, (255, 255, 255))
+    # Specielldesign
+    if t == 10:
+        # Radrensare - horisontella strimor
+        for dy in range(-r + 8, r - 6, 8):
+            sdk.circle(img, cx - 2, cy + dy, 3, (255, 255, 255))
+    elif t == 11:
+        # Kolumnrensare - vertikala strimor
+        for dx in range(-r + 8, r - 6, 8):
+            sdk.circle(img, cx + dx, cy - 2, 3, (255, 255, 255))
+    elif t == 12:
+        # Bomb - mörk med rött X
+        sdk.circle(img, cx - r + 1, cy - r + 1, r * 2, (40, 40, 40))
+        sdk.circle(img, cx - r + 3, cy - r + 3, r * 2 - 4, (60, 60, 60))
+        # X-mark
+        sdk.circle(img, cx - 6, cy - 6, 5, (255, 50, 50))
+        sdk.circle(img, cx + 6, cy + 6, 5, (255, 50, 50))
+        sdk.circle(img, cx + 6, cy - 6, 5, (255, 50, 50))
+        sdk.circle(img, cx - 6, cy + 6, 5, (255, 50, 50))
 
 
 def _draw_fading_candy(img, cx, cy, t, size, alpha):
@@ -640,8 +640,8 @@ class Game(sdk.GameBase):
                             # Berakna nuvarande Y-position (ease-out)
                             progress = fall_time / FALL_DURATION
                             ease = 1 - (1 - progress) ** 3  # ease-out cubic
-                            dy = (start_r - r) * CELL * ease
-                            draw_cy = cy + dy
+                            # Interpolera fran start till mal
+                            draw_cy = int(start_r * CELL + CELL // 2 + (r - start_r) * CELL * ease)
                             # Rita godis pa flytande position
                             _draw_candy_flying(img, cx, draw_cy, t, CELL - 8)
                         else:
