@@ -49,13 +49,13 @@ SPECIAL_COLORS = [
 ]
 
 # --- tid (allt i centisekunder = heltal) ---
-INIT_TIME = 6000                           # starttid (60s * 100)
-DRAIN = 100                                # centisekunder per sekund
-TIME_3 = 100                               # tid for 3-match (1s)
-TIME_4 = 150                               # tid for 4-match (1.5s)
-TIME_5 = 200                               # tid for 5-match (2s)
-TIME_SPECIAL = 100                         # tid for special-match (1s)
-MAX_TIME = 9000                            # max 90s
+INIT_TIME = 9000                           # starttid (90s * 100)
+DRAIN = 50                                 # centisekunder per sekund (snabbare dränering)
+TIME_3 = 150                               # tid for 3-match (1.5s)
+TIME_4 = 250                               # tid for 4-match (2.5s)
+TIME_5 = 400                               # tid for 5-match (4s)
+TIME_SPECIAL = 200                         # tid for special-match (2s)
+MAX_TIME = 15000                           # max 150s
 
 # --- animation ---
 FADE_DURATION = 150                        # 150ms for fade out
@@ -410,8 +410,8 @@ class Game(sdk.GameBase):
             self.invalidate(SCORE)
             self.invalidate(TIME_BAR)
 
-            # Nasta cascade-steg
-            self.later('cascade', 0.15, self._cascade)
+            # Nasta cascade-steg - snabbare för bättre flyt
+            self.later('cascade', 0.08, self._cascade)
         except Exception as e:
             self.log('KRASH cascade: %s' % e)
             self.processing = False
