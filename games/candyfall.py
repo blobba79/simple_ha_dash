@@ -545,12 +545,31 @@ class Game(sdk.GameBase):
             self.invalidate(SCORE)
             self.invalidate(TIME_BAR)
 
+            # Starta animationstimer for kontinuerliga redraws under fall-animation
+            self._anim_timer_start = now
+            self._invalidate_anim()
+
             # Nasta cascade-steg - vanta pa animation
             self.later('cascade', FALL_DURATION + 50, self._cascade)
         except Exception as e:
             self.log('KRASH cascade: %s' % e)
             self.processing = False
             self.invalidate()
+
+    def _invalidate_anim(self):
+        """Invalidera brade kontinuerligt under animation."""
+        if not self.processing:
+            return
+        now = self.loop.time()
+        # Kolla om det finns nagon animation pagaende
+        has_anim = bool(self._fade_out) or bool(self._falling)
+        if has_anim:
+            self.invalidate(BOARD)
+            # Schemalaga nasta invalidation om 50ms
+            self.later('anim_invalidate', 50, self._invalidate_anim)
+        else:
+            # Ingen animation pagaende, stoppa timern
+            self.cancel('anim_invalidate')
 
     def _get_match_sizes(self, matches):
         """Ger listan med match-storlekar."""
