@@ -550,7 +550,7 @@ class Game(sdk.GameBase):
             self._invalidate_anim()
 
             # Nasta cascade-steg - vanta pa animation
-            self.later('cascade', FALL_DURATION + 50, self._cascade)
+            self.later('cascade', (FALL_DURATION + 50) / 1000.0, self._cascade)
         except Exception as e:
             self.log('KRASH cascade: %s' % e)
             self.processing = False
@@ -566,7 +566,7 @@ class Game(sdk.GameBase):
         if has_anim:
             self.invalidate(BOARD)
             # Schemalaga nasta invalidation om 50ms
-            self.later('anim_invalidate', 50, self._invalidate_anim)
+            self.later('anim_invalidate', 0.05, self._invalidate_anim)
         else:
             # Ingen animation pagaende, stoppa timern
             self.cancel('anim_invalidate')
@@ -728,10 +728,12 @@ class Game(sdk.GameBase):
                             _draw_candy_flying(img, cx, draw_cy, t, CELL - 8)
                             continue  # Animering pagaende
                         else:
-                            # Klar att landa
+                            # Klar att landa - radera och fortsatt till normal ritning
                             del self._falling[(r, c)]
-                            # Fortsatt till normal ritning nedan
-                    elif t == 10:  # radrensare
+                            # Fall through to normal drawing below
+
+                    # Normal ritning (efter animation eller ingen animation)
+                    if t == 10:  # radrensare
                         _draw_striped_h(img, cx, cy, t, CELL - 8)
                     elif t == 11:  # kolumnrensare
                         _draw_striped_v(img, cx, cy, t, CELL - 8)
