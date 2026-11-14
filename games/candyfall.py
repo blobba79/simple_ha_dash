@@ -58,8 +58,8 @@ TIME_SPECIAL = 100                         # tid for special-match (1s)
 MAX_TIME = 9000                            # max 90s
 
 # --- animation (allt i millisekunder for loop.t) ---
-FALL_DURATION = 600                        # 600ms for fall
-FADE_DURATION = 300                        # 300ms for fade out
+FALL_DURATION = 400                        # 400ms for fall (snabbare)
+FADE_DURATION = 200                        # 200ms for fade out (snabbare)
 
 
 def _candy_color(t):
@@ -108,50 +108,40 @@ def _draw_candy(img, cx, cy, t, size):
     # Inre highlight (ovre kant)
     sdk.circle(img, cx - r + 3, cy - r + 3, r * 2 - 6, light)
 
-    # Unika former per typ
+    # Unika former per typ - MER DISTINKTA
     if t == 0:
-        # Rod - stjärna i mitten
-        sdk.circle(img, cx - 3, cy - 3, 6, (255, 255, 255))
-        sdk.circle(img, cx + 3, cy - 3, 6, (255, 255, 255))
-        sdk.circle(img, cx - 3, cy + 3, 6, (255, 255, 255))
-        sdk.circle(img, cx + 3, cy + 3, 6, (255, 255, 255))
-        sdk.circle(img, cx, cy, 6, (255, 255, 255))
+        # Rod - KORS (tydligt X-mønster)
+        sdk.circle(img, cx - 6, cy - 6, 5, (255, 255, 255))
+        sdk.circle(img, cx + 6, cy + 6, 5, (255, 255, 255))
+        sdk.circle(img, cx - 6, cy + 6, 5, (255, 255, 255))
+        sdk.circle(img, cx + 6, cy - 6, 5, (255, 255, 255))
     elif t == 1:
-        # Blå - våglinje
-        sdk.circle(img, cx - 8, cy, 4, (255, 255, 255))
-        sdk.circle(img, cx - 4, cy - 4, 4, (255, 255, 255))
-        sdk.circle(img, cx, cy, 4, (255, 255, 255))
-        sdk.circle(img, cx + 4, cy + 4, 4, (255, 255, 255))
-        sdk.circle(img, cx + 8, cy, 4, (255, 255, 255))
+        # Blå - CIGARR (två horisontella streck)
+        sdk.circle(img, cx - 8, cy, 5, (255, 255, 255))
+        sdk.circle(img, cx, cy, 5, (255, 255, 255))
+        sdk.circle(img, cx + 8, cy, 5, (255, 255, 255))
     elif t == 2:
-        # Grön - blad/klöver
-        sdk.circle(img, cx - 5, cy - 5, 5, (255, 255, 255))
-        sdk.circle(img, cx + 5, cy - 5, 5, (255, 255, 255))
-        sdk.circle(img, cx - 5, cy + 5, 5, (255, 255, 255))
-        sdk.circle(img, cx + 5, cy + 5, 5, (255, 255, 255))
-        sdk.circle(img, cx, cy, 4, (255, 255, 255))
+        # Grön - TRIANGUL (upp-och-ned triangul)
+        sdk.circle(img, cx, cy - 7, 5, (255, 255, 255))
+        sdk.circle(img, cx - 6, cy + 5, 5, (255, 255, 255))
+        sdk.circle(img, cx + 6, cy + 5, 5, (255, 255, 255))
     elif t == 3:
-        # Gul - solstralar
-        sdk.circle(img, cx, cy - 8, 4, (255, 255, 255))
-        sdk.circle(img, cx, cy + 8, 4, (255, 255, 255))
-        sdk.circle(img, cx - 8, cy, 4, (255, 255, 255))
-        sdk.circle(img, cx + 8, cy, 4, (255, 255, 255))
-        sdk.circle(img, cx - 6, cy - 6, 4, (255, 255, 255))
-        sdk.circle(img, cx + 6, cy + 6, 4, (255, 255, 255))
-        sdk.circle(img, cx - 6, cy + 6, 4, (255, 255, 255))
-        sdk.circle(img, cx + 6, cy - 6, 4, (255, 255, 255))
+        # Gul - DIAMANT (romb i mitten)
+        sdk.circle(img, cx, cy - 7, 5, (255, 255, 255))
+        sdk.circle(img, cx - 7, cy, 5, (255, 255, 255))
+        sdk.circle(img, cx, cy + 7, 5, (255, 255, 255))
+        sdk.circle(img, cx + 7, cy, 5, (255, 255, 255))
     elif t == 4:
-        # Lila - virvel
-        sdk.circle(img, cx - 6, cy - 2, 5, (255, 255, 255))
-        sdk.circle(img, cx + 2, cy - 6, 5, (255, 255, 255))
-        sdk.circle(img, cx + 6, cy + 2, 5, (255, 255, 255))
-        sdk.circle(img, cx - 2, cy + 6, 5, (255, 255, 255))
+        # Lila - HALVMÅNE (C-form)
+        sdk.circle(img, cx - 5, cy - 5, 5, (255, 255, 255))
+        sdk.circle(img, cx - 5, cy + 5, 5, (255, 255, 255))
+        sdk.circle(img, cx + 5, cy, 5, (255, 255, 255))
     elif t == 5:
-        # Orange - prickar
-        sdk.circle(img, cx - 6, cy - 6, 4, (255, 255, 255))
-        sdk.circle(img, cx + 6, cy - 6, 4, (255, 255, 255))
-        sdk.circle(img, cx - 6, cy + 6, 4, (255, 255, 255))
-        sdk.circle(img, cx + 6, cy + 6, 4, (255, 255, 255))
+        # Orange - STJÄRNA (5 punkter)
+        sdk.circle(img, cx, cy - 7, 4, (255, 255, 255))
+        sdk.circle(img, cx + 7, cy, 4, (255, 255, 255))
+        sdk.circle(img, cx, cy + 7, 4, (255, 255, 255))
+        sdk.circle(img, cx - 7, cy, 4, (255, 255, 255))
         sdk.circle(img, cx, cy, 4, (255, 255, 255))
 
     # Specielldesign
@@ -208,44 +198,40 @@ def _draw_candy_flying(img, cx, cy, t, size):
     # Inre highlight (ovre kant)
     sdk.circle(img, cx - r + 3, cy - r + 3, r * 2 - 6, light)
 
-    # Unika former per typ (samma som _draw_candy)
+    # Unika former per typ (SAMMA som _draw_candy)
     if t == 0:
-        sdk.circle(img, cx - 3, cy - 3, 6, (255, 255, 255))
-        sdk.circle(img, cx + 3, cy - 3, 6, (255, 255, 255))
-        sdk.circle(img, cx - 3, cy + 3, 6, (255, 255, 255))
-        sdk.circle(img, cx + 3, cy + 3, 6, (255, 255, 255))
-        sdk.circle(img, cx, cy, 6, (255, 255, 255))
+        # Rod - KORS
+        sdk.circle(img, cx - 6, cy - 6, 5, (255, 255, 255))
+        sdk.circle(img, cx + 6, cy + 6, 5, (255, 255, 255))
+        sdk.circle(img, cx - 6, cy + 6, 5, (255, 255, 255))
+        sdk.circle(img, cx + 6, cy - 6, 5, (255, 255, 255))
     elif t == 1:
-        sdk.circle(img, cx - 8, cy, 4, (255, 255, 255))
-        sdk.circle(img, cx - 4, cy - 4, 4, (255, 255, 255))
-        sdk.circle(img, cx, cy, 4, (255, 255, 255))
-        sdk.circle(img, cx + 4, cy + 4, 4, (255, 255, 255))
-        sdk.circle(img, cx + 8, cy, 4, (255, 255, 255))
+        # Blå - CIGARR
+        sdk.circle(img, cx - 8, cy, 5, (255, 255, 255))
+        sdk.circle(img, cx, cy, 5, (255, 255, 255))
+        sdk.circle(img, cx + 8, cy, 5, (255, 255, 255))
     elif t == 2:
-        sdk.circle(img, cx - 5, cy - 5, 5, (255, 255, 255))
-        sdk.circle(img, cx + 5, cy - 5, 5, (255, 255, 255))
-        sdk.circle(img, cx - 5, cy + 5, 5, (255, 255, 255))
-        sdk.circle(img, cx + 5, cy + 5, 5, (255, 255, 255))
-        sdk.circle(img, cx, cy, 4, (255, 255, 255))
+        # Grön - TRIANGUL
+        sdk.circle(img, cx, cy - 7, 5, (255, 255, 255))
+        sdk.circle(img, cx - 6, cy + 5, 5, (255, 255, 255))
+        sdk.circle(img, cx + 6, cy + 5, 5, (255, 255, 255))
     elif t == 3:
-        sdk.circle(img, cx, cy - 8, 4, (255, 255, 255))
-        sdk.circle(img, cx, cy + 8, 4, (255, 255, 255))
-        sdk.circle(img, cx - 8, cy, 4, (255, 255, 255))
-        sdk.circle(img, cx + 8, cy, 4, (255, 255, 255))
-        sdk.circle(img, cx - 6, cy - 6, 4, (255, 255, 255))
-        sdk.circle(img, cx + 6, cy + 6, 4, (255, 255, 255))
-        sdk.circle(img, cx - 6, cy + 6, 4, (255, 255, 255))
-        sdk.circle(img, cx + 6, cy - 6, 4, (255, 255, 255))
+        # Gul - DIAMANT
+        sdk.circle(img, cx, cy - 7, 5, (255, 255, 255))
+        sdk.circle(img, cx - 7, cy, 5, (255, 255, 255))
+        sdk.circle(img, cx, cy + 7, 5, (255, 255, 255))
+        sdk.circle(img, cx + 7, cy, 5, (255, 255, 255))
     elif t == 4:
-        sdk.circle(img, cx - 6, cy - 2, 5, (255, 255, 255))
-        sdk.circle(img, cx + 2, cy - 6, 5, (255, 255, 255))
-        sdk.circle(img, cx + 6, cy + 2, 5, (255, 255, 255))
-        sdk.circle(img, cx - 2, cy + 6, 5, (255, 255, 255))
+        # Lila - HALVMÅNE
+        sdk.circle(img, cx - 5, cy - 5, 5, (255, 255, 255))
+        sdk.circle(img, cx - 5, cy + 5, 5, (255, 255, 255))
+        sdk.circle(img, cx + 5, cy, 5, (255, 255, 255))
     elif t == 5:
-        sdk.circle(img, cx - 6, cy - 6, 4, (255, 255, 255))
-        sdk.circle(img, cx + 6, cy - 6, 4, (255, 255, 255))
-        sdk.circle(img, cx - 6, cy + 6, 4, (255, 255, 255))
-        sdk.circle(img, cx + 6, cy + 6, 4, (255, 255, 255))
+        # Orange - STJÄRNA
+        sdk.circle(img, cx, cy - 7, 4, (255, 255, 255))
+        sdk.circle(img, cx + 7, cy, 4, (255, 255, 255))
+        sdk.circle(img, cx, cy + 7, 4, (255, 255, 255))
+        sdk.circle(img, cx - 7, cy, 4, (255, 255, 255))
         sdk.circle(img, cx, cy, 4, (255, 255, 255))
 
     # Specielldesign
@@ -562,8 +548,8 @@ class Game(sdk.GameBase):
             self._anim_timer_start = now
             self._invalidate_anim()
 
-            # Nasta cascade-steg - vanta pa animation
-            self.later('cascade', (FALL_DURATION + 50) / 1000.0, self._cascade)
+            # Nasta cascade-steg - 80% av fall-duration för fluid känsla
+            self.later('cascade', FALL_DURATION * 0.8 / 1000.0, self._cascade)
         except Exception as e:
             self.log('KRASH cascade: %s' % e)
             self.processing = False
