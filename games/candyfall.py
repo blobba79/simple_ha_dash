@@ -57,9 +57,8 @@ TIME_5 = 200                               # tid for 5-match (2s)
 TIME_SPECIAL = 100                         # tid for special-match (1s)
 MAX_TIME = 9000                            # max 90s
 
-# --- animation (allt i millisekunder for loop.t) ---
-FALL_DURATION = 400                        # 400ms for fall (snabbare)
-FADE_DURATION = 200                        # 200ms for fade out (snabbare)
+# --- animation ---
+FADE_DURATION = 150                        # 150ms for fade out
 
 
 def _candy_color(t):
@@ -108,65 +107,66 @@ def _draw_candy(img, cx, cy, t, size):
     # Inre highlight (ovre kant)
     sdk.circle(img, cx - r + 3, cy - r + 3, r * 2 - 6, light)
 
-    # Unika former per typ - STORA, MYCKET TYDLIGA former
+    # Unika former per typ - SOLIDA former utan prickar
     if t == 0:
-        # Rod - STORT KORS (5 prickar: mitt + 4 armar)
-        sdk.circle(img, cx, cy, 12, (255, 255, 255))
-        sdk.circle(img, cx, cy - 16, 7, (255, 255, 255))
-        sdk.circle(img, cx, cy + 16, 7, (255, 255, 255))
-        sdk.circle(img, cx - 16, cy, 7, (255, 255, 255))
-        sdk.circle(img, cx + 16, cy, 7, (255, 255, 255))
+        # Rod - KVADRAT (fyll med cirklar)
+        for dy in range(-18, 19, 8):
+            for dx in range(-18, 19, 8):
+                sdk.circle(img, cx + dx, cy + dy, 8, col)
     elif t == 1:
-        # Blå - HORISONTELL LINJE (3 stora prickar)
-        sdk.circle(img, cx, cy, 12, (255, 255, 255))
-        sdk.circle(img, cx - 16, cy, 8, (255, 255, 255))
-        sdk.circle(img, cx + 16, cy, 8, (255, 255, 255))
+        # Bla - TRIANGUL (pekar upp)
+        for row in range(3):
+            y = cy - 18 + row * 12
+            w = 6 + row * 8
+            for dx in range(-w, w + 1, 8):
+                sdk.circle(img, cx + dx, y, 7, col)
     elif t == 2:
-        # Grön - TRIANGUL (4 prickar: topp + bas + mitt)
-        sdk.circle(img, cx, cy, 12, (255, 255, 255))
-        sdk.circle(img, cx, cy - 16, 8, (255, 255, 255))
-        sdk.circle(img, cx - 14, cy + 12, 8, (255, 255, 255))
-        sdk.circle(img, cx + 14, cy + 12, 8, (255, 255, 255))
+        # Grön - DIAMANT
+        for row in range(5):
+            y = cy - 18 + row * 9
+            w = 4 + row * 4 if row < 3 else 12 - row * 4
+            for dx in range(-w, w + 1, 8):
+                sdk.circle(img, cx + dx, y, 7, col)
     elif t == 3:
-        # Gul - DIAMANT (5 prickar: mitt + 4 hörn)
-        sdk.circle(img, cx, cy, 12, (255, 255, 255))
-        sdk.circle(img, cx, cy - 16, 7, (255, 255, 255))
-        sdk.circle(img, cx - 16, cy, 7, (255, 255, 255))
-        sdk.circle(img, cx, cy + 16, 7, (255, 255, 255))
-        sdk.circle(img, cx + 16, cy, 7, (255, 255, 255))
+        # Gul - STJÄRNA (5 punkter)
+        for i in range(10):
+            angle = i * 3.14159 / 5 - 3.14159 / 2
+            rad = 18 if i % 2 == 0 else 9
+            sx = cx + int(rad * 0.7 * 1.41)
+            sy = cy + int(rad * 0.7 * 1.41)
+            sdk.circle(img, sx, sy, 10, col)
+        sdk.circle(img, cx, cy, 10, col)
     elif t == 4:
-        # Lila - HALVMÅNE/C-FORM (4 prickar)
-        sdk.circle(img, cx, cy, 12, (255, 255, 255))
-        sdk.circle(img, cx - 12, cy - 12, 7, (255, 255, 255))
-        sdk.circle(img, cx - 12, cy + 12, 7, (255, 255, 255))
-        sdk.circle(img, cx + 12, cy, 7, (255, 255, 255))
+        # Lila - HALVCIRKEL (öppning nedan)
+        for dy in range(-18, 2):
+            for dx in range(-18, 19):
+                if dx * dx + dy * dy <= 18 * 18:
+                    sdk.circle(img, cx + dx, cy + dy, 7, col)
     elif t == 5:
-        # Orange - STJÄRNA (6 prickar: mitt + 5 i cirkel)
-        sdk.circle(img, cx, cy, 12, (255, 255, 255))
-        sdk.circle(img, cx, cy - 16, 6, (255, 255, 255))
-        sdk.circle(img, cx + 15, cy - 5, 6, (255, 255, 255))
-        sdk.circle(img, cx + 9, cy + 14, 6, (255, 255, 255))
-        sdk.circle(img, cx - 9, cy + 14, 6, (255, 255, 255))
-        sdk.circle(img, cx - 15, cy - 5, 6, (255, 255, 255))
+        # Orange - KORS
+        for dy in range(-18, 19, 8):
+            for dx in range(-18, 19, 8):
+                if abs(dx) <= 6 or abs(dy) <= 6:
+                    sdk.circle(img, cx + dx, cy + dy, 7, col)
 
     # Specielldesign
     if t == 10:
-        # Radrensare - horisontella strimor
-        for dy in range(-r + 8, r - 6, 8):
-            sdk.circle(img, cx - 2, cy + dy, 3, (255, 255, 255))
+        # Radrensare - horisontella streck
+        for dx in range(-18, 19, 8):
+            sdk.circle(img, cx + dx, cy - 6, 5, (255, 255, 255))
+            sdk.circle(img, cx + dx, cy + 6, 5, (255, 255, 255))
     elif t == 11:
-        # Kolumnrensare - vertikala strimor
-        for dx in range(-r + 8, r - 6, 8):
-            sdk.circle(img, cx + dx, cy - 2, 3, (255, 255, 255))
+        # Kolumnrensare - vertikala streck
+        for dy in range(-18, 19, 8):
+            sdk.circle(img, cx - 6, cy + dy, 5, (255, 255, 255))
+            sdk.circle(img, cx + 6, cy + dy, 5, (255, 255, 255))
     elif t == 12:
         # Bomb - mörk med rött X
         sdk.circle(img, cx - r + 1, cy - r + 1, r * 2, (40, 40, 40))
         sdk.circle(img, cx - r + 3, cy - r + 3, r * 2 - 4, (60, 60, 60))
-        # X-mark
-        sdk.circle(img, cx - 6, cy - 6, 5, (255, 50, 50))
-        sdk.circle(img, cx + 6, cy + 6, 5, (255, 50, 50))
-        sdk.circle(img, cx + 6, cy - 6, 5, (255, 50, 50))
-        sdk.circle(img, cx - 6, cy + 6, 5, (255, 50, 50))
+        for i in range(-1, 2):
+            sdk.circle(img, cx + i * 8, cy + i * 8, 5, (255, 50, 50))
+            sdk.circle(img, cx - i * 8, cy + i * 8, 5, (255, 50, 50))
 
 
 def _draw_fading_candy(img, cx, cy, t, size, alpha):
@@ -182,82 +182,6 @@ def _draw_fading_candy(img, cx, cy, t, size, alpha):
 
     # Highlight
     sdk.circle(img, cx - r + 6, cy - r + 6, 6, (255, 255, 255))
-
-
-def _draw_candy_flying(img, cx, cy, t, size):
-    """Ritar en godis pa en godtycklig position (for fall-animation)."""
-    r = size // 2 - 4
-    col = _candy_color(t)
-    dark = (col[0] // 2, col[1] // 2, col[2] // 2)
-    light = tuple(min(255, c + 80) for c in col)
-
-    # Yttre skugga
-    sdk.circle(img, cx - r + 2, cy - r + 2, r * 2, (0, 0, 0, 60))
-
-    # Botten (3D-effekt)
-    sdk.circle(img, cx - r + 1, cy - r + 1, r * 2, dark)
-
-    # Huvudkropp
-    sdk.circle(img, cx - r, cy - r, r * 2, col)
-
-    # Inre highlight (ovre kant)
-    sdk.circle(img, cx - r + 3, cy - r + 3, r * 2 - 6, light)
-
-    # Unika former per typ (SAMMA som _draw_candy - STORA former)
-    if t == 0:
-        # Rod - STORT KORS
-        sdk.circle(img, cx, cy, 12, (255, 255, 255))
-        sdk.circle(img, cx, cy - 16, 7, (255, 255, 255))
-        sdk.circle(img, cx, cy + 16, 7, (255, 255, 255))
-        sdk.circle(img, cx - 16, cy, 7, (255, 255, 255))
-        sdk.circle(img, cx + 16, cy, 7, (255, 255, 255))
-    elif t == 1:
-        # Blå - HORISONTELL LINJE
-        sdk.circle(img, cx, cy, 12, (255, 255, 255))
-        sdk.circle(img, cx - 16, cy, 8, (255, 255, 255))
-        sdk.circle(img, cx + 16, cy, 8, (255, 255, 255))
-    elif t == 2:
-        # Grön - TRIANGUL
-        sdk.circle(img, cx, cy, 12, (255, 255, 255))
-        sdk.circle(img, cx, cy - 16, 8, (255, 255, 255))
-        sdk.circle(img, cx - 14, cy + 12, 8, (255, 255, 255))
-        sdk.circle(img, cx + 14, cy + 12, 8, (255, 255, 255))
-    elif t == 3:
-        # Gul - DIAMANT
-        sdk.circle(img, cx, cy, 12, (255, 255, 255))
-        sdk.circle(img, cx, cy - 16, 7, (255, 255, 255))
-        sdk.circle(img, cx - 16, cy, 7, (255, 255, 255))
-        sdk.circle(img, cx, cy + 16, 7, (255, 255, 255))
-        sdk.circle(img, cx + 16, cy, 7, (255, 255, 255))
-    elif t == 4:
-        # Lila - HALVMÅNE
-        sdk.circle(img, cx, cy, 12, (255, 255, 255))
-        sdk.circle(img, cx - 12, cy - 12, 7, (255, 255, 255))
-        sdk.circle(img, cx - 12, cy + 12, 7, (255, 255, 255))
-        sdk.circle(img, cx + 12, cy, 7, (255, 255, 255))
-    elif t == 5:
-        # Orange - STJÄRNA
-        sdk.circle(img, cx, cy, 12, (255, 255, 255))
-        sdk.circle(img, cx, cy - 16, 6, (255, 255, 255))
-        sdk.circle(img, cx + 15, cy - 5, 6, (255, 255, 255))
-        sdk.circle(img, cx + 9, cy + 14, 6, (255, 255, 255))
-        sdk.circle(img, cx - 9, cy + 14, 6, (255, 255, 255))
-        sdk.circle(img, cx - 15, cy - 5, 6, (255, 255, 255))
-
-    # Specielldesign
-    if t == 10:
-        for dy in range(-r + 8, r - 6, 8):
-            sdk.circle(img, cx - 2, cy + dy, 3, (255, 255, 255))
-    elif t == 11:
-        for dx in range(-r + 8, r - 6, 8):
-            sdk.circle(img, cx + dx, cy - 2, 3, (255, 255, 255))
-    elif t == 12:
-        sdk.circle(img, cx - r + 1, cy - r + 1, r * 2, (40, 40, 40))
-        sdk.circle(img, cx - r + 3, cy - r + 3, r * 2 - 4, (60, 60, 60))
-        sdk.circle(img, cx - 6, cy - 6, 5, (255, 50, 50))
-        sdk.circle(img, cx + 6, cy + 6, 5, (255, 50, 50))
-        sdk.circle(img, cx + 6, cy - 6, 5, (255, 50, 50))
-        sdk.circle(img, cx - 6, cy + 6, 5, (255, 50, 50))
 
 
 # --- cell-ruta ---
@@ -287,8 +211,6 @@ class Game(sdk.GameBase):
 
         # Animationer
         self._fade_out = {}           # {(r,c): start_time} - godisar som forsvinner
-        self._falling = {}            # {(r,c): (start_r, start_time)} - godisar som faller
-        self._new_candies = {}        # {(r,c): spawn_time} - nya godisar som dyker upp
 
     # ---- sparfil ----
     def state(self):
@@ -392,8 +314,6 @@ class Game(sdk.GameBase):
         self.processing = False
         self.dragging = None
         self._fade_out.clear()
-        self._falling.clear()
-        self._new_candies.clear()
         self._fill_board()
         self._start_timer()
 
@@ -454,12 +374,10 @@ class Game(sdk.GameBase):
     def _cascade(self):
         """Kor ett steg av cascade: hitta-matcha-rensa-gravitfyll."""
         try:
-            # Rensa bara animationer som är klara (inte de som fortfarande pågår)
+            # Rensa bara animationer som är klara
             now = self.loop.time()
             self._fade_out = {k: v for k, v in self._fade_out.items()
                               if now - v < FADE_DURATION}
-            self._falling = {k: v for k, v in self._falling.items()
-                             if now - v[1] < FALL_DURATION}
 
             matches = self._find_matches()
             if not matches:
@@ -546,42 +464,23 @@ class Game(sdk.GameBase):
                 union_rect = sdk.union(union_rect, rect)
             self.invalidate(union_rect)
 
-            # Gravitation: lat godisar falla
-            falling_cells = self._apply_gravity_with_animation(now)
+            # Gravitation: lat godisar falla (utan animation)
+            self._apply_gravity()
 
-            # Fyll tomrum med nya godisar fran ovan
-            self._fill_gaps_with_animation(now, falling_cells)
+            # Fyll tomrum med nya godisar (utan animation)
+            self._fill_gaps()
 
             # Rita bradets
             self.invalidate(BOARD)
             self.invalidate(SCORE)
             self.invalidate(TIME_BAR)
 
-            # Starta animationstimer for kontinuerliga redraws under fall-animation
-            self._anim_timer_start = now
-            self._invalidate_anim()
-
-            # Nasta cascade-steg - 80% av fall-duration för fluid känsla
-            self.later('cascade', FALL_DURATION * 0.8 / 1000.0, self._cascade)
+            # Nasta cascade-steg
+            self.later('cascade', 0.15, self._cascade)
         except Exception as e:
             self.log('KRASH cascade: %s' % e)
             self.processing = False
             self.invalidate()
-
-    def _invalidate_anim(self):
-        """Invalidera brade kontinuerligt under animation."""
-        if not self.processing:
-            return
-        now = self.loop.time()
-        # Kolla om det finns nagon animation pagaende
-        has_anim = bool(self._fade_out) or bool(self._falling)
-        if has_anim:
-            self.invalidate(BOARD)
-            # Schemalaga nasta invalidation om 50ms
-            self.later('anim_invalidate', 0.05, self._invalidate_anim)
-        else:
-            # Ingen animation pagaende, stoppa timern
-            self.cancel('anim_invalidate')
 
     def _get_match_sizes(self, matches):
         """Ger listan med match-storlekar."""
@@ -598,40 +497,12 @@ class Game(sdk.GameBase):
             for r in range(write_pos, -1, -1):
                 self.board[r][c] = -1
 
-    def _apply_gravity_with_animation(self, now):
-        """Lat godisar falla ner med animation. Returnerar celler som faller."""
-        falling = []
-        for c in range(COLS):
-            write_pos = ROWS - 1
-            for r in range(ROWS - 1, -1, -1):
-                if self.board[r][c] >= 0:
-                    if write_pos != r:
-                        # Denna godis faller
-                        falling.append((write_pos, c, r, now))
-                    self.board[write_pos][c] = self.board[r][c]
-                    write_pos -= 1
-            for r in range(write_pos, -1, -1):
-                self.board[r][c] = -1
-        # Lagra fall-info
-        for (new_r, c, old_r, t) in falling:
-            self._falling[(new_r, c)] = (old_r, t)
-        return falling
-
     def _fill_gaps(self):
         """Fyll tomma rutor med nya godisar fran ovan."""
         for c in range(COLS):
             for r in range(ROWS):
                 if self.board[r][c] < 0:
                     self.board[r][c] = self.rng.randrange(0, 6)
-
-    def _fill_gaps_with_animation(self, now, falling_cells):
-        """Fyll tomma rutor med nya godisar som faller fran ovan."""
-        for c in range(COLS):
-            for r in range(ROWS):
-                if self.board[r][c] < 0:
-                    self.board[r][c] = self.rng.randrange(0, 6)
-                    # Ny godis faller fran ovan (1 ruta over for kortare animation)
-                    self._falling[(r, c)] = (max(0, r - 1), now)
 
     # ---- match-detektion ----
     def _find_matches(self, board=None):
@@ -706,10 +577,9 @@ class Game(sdk.GameBase):
 
                     # Kontrollera animationer (FADE MASTE KOLLAS FORST - oavsett om t ar -1)
                     is_fading = (r, c) in self._fade_out
-                    is_falling = (r, c) in self._falling
 
                     # Om ej klarbar och ingen animation, hoppa over
-                    if not _is_clearable(t) and not is_fading and not is_falling:
+                    if not _is_clearable(t) and not is_fading:
                         continue
 
                     # Rita markerad godis med ljus bakgrund och gul kant
@@ -727,24 +597,7 @@ class Game(sdk.GameBase):
                             continue  # Animering pagaende, hoppa over resten
                         else:
                             del self._fade_out[(r, c)]
-                            # Fade klar, kolla fall-animation nedan
-
-                    if is_falling:
-                        start_r, start_time = self._falling[(r, c)]
-                        fall_time = now - start_time
-                        if fall_time < FALL_DURATION:
-                            # Berakna nuvarande Y-position (ease-out)
-                            progress = fall_time / FALL_DURATION
-                            ease = 1 - (1 - progress) ** 3  # ease-out cubic
-                            # Interpolera fran start till mal
-                            draw_cy = int(BY + start_r * CELL + CELL // 2 + (r - start_r) * CELL * ease)
-                            # Rita godis pa flytande position
-                            _draw_candy_flying(img, cx, draw_cy, t, CELL - 8)
-                            continue  # Animering pagaende
-                        else:
-                            # Klar att landa - radera och fortsatt till normal ritning
-                            del self._falling[(r, c)]
-                            # Fall through to normal drawing below
+                            # Fade klar, fortsatt till normal ritning nedan
 
                     # Normal ritning (efter animation eller ingen animation)
                     _draw_candy(img, cx, cy, t, CELL - 8)
